@@ -1,0 +1,11 @@
+services:
+  ddns-api:
+    build: .
+    image: ddns-api:latest
+    container_name: ddns-api
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - ./data:/app/data

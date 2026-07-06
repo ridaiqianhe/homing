@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}登录{% endblock %}
+{% block body %}
+<div class="loginwrap">
+  <div class="loginbox">
+    <div class="loginhead">
+      <div class="mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg>
+      </div>
+      <div class="brand"><b>{{ site_name }}</b><span>自建 DDNS 控制台</span></div>
+    </div>
+
+    <form method="post" class="card mform logincard">
+      <h2>登录</h2>
+      <p class="sub">请输入管理员账号密码</p>
+      {% if err %}<div class="err">{{ err }}</div>{% endif %}
+      <label>账号</label>
+      <input type="text" name="username" autocomplete="username" autofocus required placeholder="管理员账号">
+      <label>密码</label>
+      <input type="password" name="password" autocomplete="current-password" required placeholder="••••••••">
+      <button class="btn" type="submit">登录</button>
+    </form>
+    <p class="foot">Cloudflare 后端 · dyndns2 兼容</p>
+  </div>
+</div>
+<style>
+  .loginwrap{min-height:100vh;display:grid;place-items:center;padding:24px;
+    background:radial-gradient(1200px 600px at 50% -10%, var(--accent-weak), transparent 60%);}
+  .loginbox{width:100%;max-width:372px;}
+  .loginhead{display:flex;align-items:center;gap:12px;justify-content:center;margin-bottom:22px;}
+  .logincard{padding:26px 24px;display:flex;flex-direction:column;}
+  .logincard h2{margin:0;font-size:18px;font-weight:700;letter-spacing:-.01em;}
+  .logincard .sub{margin:3px 0 0;font-size:12.5px;color:var(--muted);}
+  .logincard label{margin-top:16px;}
+  .logincard label:first-of-type{margin-top:20px;}
+  .logincard .err{margin-top:14px;background:var(--crit-bg);color:var(--crit);font-size:12.5px;font-weight:600;padding:9px 12px;border-radius:8px;}
+  .logincard .btn{width:100%;justify-content:center;margin-top:22px;padding:11px;font-size:14px;}
+  .foot{text-align:center;font-size:11.5px;color:var(--faint);margin-top:18px;letter-spacing:.02em;}
+</style>
+{% endblock %}

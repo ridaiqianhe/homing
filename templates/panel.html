@@ -1,0 +1,449 @@
+{% extends "base.html" %}
+{% block title %}主机与解析{% endblock %}
+{% block body %}
+<header>
+  <div class="bar">
+    <div class="mark" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg>
+    </div>
+    <div class="brand"><b>{{ site_name }}</b><span>自建 DDNS 控制台</span></div>
+    <span class="tag">自托管 · Cloudflare 后端</span>
+    <div class="spacer"></div>
+    <button class="iconbtn" id="theme" title="切换主题" aria-label="切换主题">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" width="17" height="17"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+    </button>
+    <button class="btn" onclick="document.getElementById('addModal').showModal()">
+      <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>添加主机</button>
+    <a class="iconbtn" href="{{ url_for('logout') }}" title="退出登录" aria-label="退出">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" width="17" height="17"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>
+    </a>
+  </div>
+</header>
+
+<div class="wrap">
+  <h1 class="page">主机与解析</h1>
+  <p class="lede">每个主机分配独立更新密钥，只能改自己的二级域名。Cloudflare Token 只保存在这台服务器，客户端永远接触不到。</p>
+  {% if err %}<div style="background:var(--crit-bg);color:var(--crit);font-size:13px;font-weight:600;padding:10px 14px;border-radius:9px;margin-bottom:18px;">{{ err }}</div>{% endif %}
+
+  <div class="stats">
+    <div class="tile"><div class="k">托管主机</div><div class="v">{{ stats.total }}</div><div class="sub">{{ stats.proxied }} 个代理 · {{ stats.total - stats.proxied }} 个仅 DNS</div></div>
+    <div class="tile"><div class="k">状态</div><div class="v"><span class="dot good"></span>{{ stats.good }} <small>/ {{ stats.total }} 正常</small></div><div class="sub">{{ stats.stale }} 个解析陈旧</div></div>
+    <div class="tile"><div class="k">协议</div><div class="v" style="font-size:17px;padding-top:7px;">dyndns2</div><div class="sub">标准客户端可直连</div></div>
+    <div class="tile"><div class="k">Cloudflare 授权</div>
+      {% if stats.tokens %}<div class="v"><span class="dot good"></span>{{ stats.tokens }} <small>Token</small></div><div class="sub">覆盖 {{ stats.zones|length }} 个域名</div>
+      {% else %}<div class="v" style="font-size:16px;color:var(--warn);font-weight:700;padding-top:7px;">● 未添加</div><div class="sub">下方添加 Token</div>{% endif %}
+    </div>
+  </div>
+
+  <div class="sec-head" style="justify-content:space-between;">
+    <div style="display:flex;align-items:baseline;gap:10px;"><h2>Cloudflare 授权</h2><span class="count">{{ stats.tokens }} token · {{ stats.zones|length }} 域名</span></div>
+    <button class="mini" onclick="document.getElementById('tokenModal').showModal()">
+      <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>添加 Token</button>
+  </div>
+  <div class="card" style="margin-bottom:30px;">
+    {% if tokens %}
+    <div class="tablescroll"><table style="min-width:600px;">
+      <thead><tr><th>备注</th><th>Token</th><th>可管理的域名</th><th style="text-align:right;">操作</th></tr></thead>
+      <tbody>
+        {% for t in tokens %}
+        <tr>
+          <td style="font-weight:600;">{{ t.label }}</td>
+          <td><span class="ip">{{ t.mask }}</span></td>
+          <td>{% for z in t.zones %}<span class="pill" style="background:var(--accent-weak);color:var(--accent-ink);margin:1px 3px 1px 0;">{{ z }}</span>{% else %}<span class="line muted">无</span>{% endfor %}</td>
+          <td>
+            <div class="rowbtns" style="align-items:center;">
+              <span class="vstat" id="vs-{{ t.id }}"></span>
+              <button class="mini" onclick="verifyToken('{{ t.id }}')" title="验证 Token 是否有效"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="M22 4L12 14.01l-3-3"/></svg>验证</button>
+              <form method="post" action="{{ url_for('refresh_token', tid=t.id) }}" style="display:inline;"><button class="mini" type="submit" title="重新探测域名"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M1 20v-6h6M20.5 9A9 9 0 0 0 5.6 5.6L1 10m22 4l-4.6 4.4A9 9 0 0 1 3.5 15"/></svg></button></form>
+              <form method="post" action="{{ url_for('delete_token', tid=t.id) }}" onsubmit="return confirm('删除此 Token？其覆盖的域名将无法再更新。')" style="display:inline;"><button class="mini danger" type="submit"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg></button></form>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+    {% else %}
+    <div class="empty">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+      <div style="font-weight:600;color:var(--text);">还没有 Cloudflare Token</div>
+      <div style="font-size:13px;margin-top:4px;">添加一个 Zone.DNS 权限的 Token，系统会自动探测它能管哪些域名</div>
+      <button class="btn" style="margin-top:14px;" onclick="document.getElementById('tokenModal').showModal()">添加 Token</button>
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="sec-head" style="justify-content:space-between;">
+    <div style="display:flex;align-items:baseline;gap:10px;"><h2>SSL 证书</h2><span class="count">通配符 · DNS-01 自动续期</span></div>
+  </div>
+  <div class="card" style="margin-bottom:30px;">
+    {% if certs %}
+    <div class="tablescroll"><table style="min-width:640px;">
+      <thead><tr><th>覆盖域名</th><th>状态</th><th>剩余有效期</th><th style="text-align:right;">操作</th></tr></thead>
+      <tbody>
+        {% for c in certs %}
+        <tr>
+          <td>{% for dm in c.domains %}<span class="host" style="margin-right:8px;">{{ dm }}</span>{% endfor %}</td>
+          <td>
+            {% if c.status == 'ok' %}<span class="pill good"><span class="d"></span>有效</span>
+            {% elif c.status == 'warn' %}<span class="pill warn"><span class="d"></span>即将到期</span>
+            {% else %}<span class="pill pending"><span class="d"></span>无证书</span>{% endif %}
+          </td>
+          <td>{% if c.days is not none %}<span class="when" style="font-family:var(--mono);">{{ c.days }} 天</span>{% else %}<span class="line muted">—</span>{% endif %}</td>
+          <td>
+            <div class="rowbtns" style="align-items:center;">
+              <span class="vstat" id="cs-{{ loop.index }}"></span>
+              <button class="mini" onclick='issueCert({{ c.zone|tojson }}, {{ loop.index }})'><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M20.5 9A9 9 0 0 0 5.6 5.6L1 10"/></svg>续期</button>
+              <button class="mini" onclick="document.getElementById('certHelp').showModal()"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 17l6-6-6-6M12 19h8"/></svg>拉取脚本</button>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+    {% else %}
+    <div class="empty">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+      <div style="font-weight:600;color:var(--text);">还没有签发证书</div>
+      <div style="font-size:13px;margin-top:4px;">为已授权的域名申请一张 <b>*.域名</b> 通配符证书，自动续期</div>
+      {% if zones %}
+      <div style="margin-top:14px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap;">
+        {% for z in zones %}
+        <button class="btn" onclick='issueCert({{ z|tojson }}, 0)'>申请 *.{{ z }}</button>
+        {% endfor %}
+      </div>
+      <div class="vstat" id="cs-0" style="margin-top:12px;justify-content:center;"></div>
+      {% else %}<div style="font-size:12px;margin-top:8px;color:var(--warn);">请先添加 Cloudflare Token</div>{% endif %}
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="sec-head"><h2>主机列表</h2><span class="count">{{ stats.total }} hosts</span></div>
+
+  <div class="card">
+    {% if rows %}
+    <div class="tablescroll">
+      <table>
+        <thead><tr><th>主机名</th><th>当前 IP</th><th>状态</th><th>最近更新</th><th>线路</th><th style="text-align:right;">操作</th></tr></thead>
+        <tbody>
+          {% for r in rows %}
+          <tr>
+            <td><span class="host">{{ r.sub }}<span class="z">{{ r.zsuffix }}</span>{% if r.label %}<span class="lbl">{{ r.label }}</span>{% endif %}</span></td>
+            <td>{% if r.ip %}<span class="ip">{{ r.ip }}</span>{% else %}<span class="ip none">—</span>{% endif %}</td>
+            <td>
+              {% if r.status == 'good' %}<span class="pill good"><span class="d"></span>正常</span>
+              {% elif r.status == 'warn' %}<span class="pill warn"><span class="d"></span>陈旧</span>
+              {% else %}<span class="pill pending"><span class="d"></span>待更新</span>{% endif %}
+            </td>
+            <td><span class="when">{{ r.ago }}</span></td>
+            <td>{% if r.proxied %}<span class="line proxied">● 代理 · <span class="muted">橙云</span></span>{% else %}<span class="line">DNS-only · <span class="muted">TTL {{ r.ttl }}</span></span>{% endif %}</td>
+            <td>
+              <div class="rowbtns" style="align-items:center;">
+                <span class="vstat" id="hs-{{ loop.index }}" data-host="{{ r.host }}"></span>
+                <button class="mini" onclick='testHost({{ r.host|tojson }}, {{ loop.index }})' title="检查当前实际解析">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>测试</button>
+                <button class="mini" onclick='openAccess({{ r.host|tojson }}, {{ r.key|tojson }})'>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 17l6-6-6-6M12 19h8"/></svg>接入</button>
+                <form method="post" action="{{ url_for('rotate', host=r.host) }}" onsubmit="return confirm('轮换 {{ r.host }} 的密钥？旧密钥立即失效。')" style="display:inline;">
+                  <button class="mini" type="submit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M1 20v-6h6M20.5 9A9 9 0 0 0 5.6 5.6L1 10m22 4l-4.6 4.4A9 9 0 0 1 3.5 15"/></svg>轮换</button>
+                </form>
+                <button class="mini danger" onclick='openDelete({{ r.host|tojson }})'>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>删除</button>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="empty">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg>
+      <div style="font-weight:600;color:var(--text);">还没有主机</div>
+      <div style="font-size:13px;margin-top:4px;">点右上角「添加主机」创建第一个自定义域名</div>
+    </div>
+    {% endif %}
+  </div>
+
+  <footer>
+    <span>{{ site_name }}</span><span>后端 Cloudflare</span><span>协议 dyndns2 兼容</span>
+  </footer>
+</div>
+
+<!-- 添加主机 -->
+<dialog id="addModal">
+  <form method="post" action="{{ url_for('add_host') }}" class="mform">
+    <div class="mhead"><h3>添加主机</h3><p>创建一个自定义二级域名，系统会自动生成更新密钥。</p></div>
+    <div class="mbody">
+      <label>完整域名 Hostname</label>
+      <input type="text" name="hostname" placeholder="{% if zones %}myhost.{{ zones[0] }}{% else %}myhost.example.com{% endif %}" required>
+      {% if zones %}<div class="note" style="margin-top:6px;">可用域名：{% for z in zones %}<span class="pill" style="background:var(--accent-weak);color:var(--accent-ink);margin:1px 3px 0 0;">{{ z }}</span>{% endfor %}</div>
+      {% else %}<div class="note" style="margin-top:6px;color:var(--warn);">⚠ 请先添加 Cloudflare Token，否则无法更新解析</div>{% endif %}
+      <label>备注名称 Label（可选）</label>
+      <input type="text" name="label" placeholder="例如：boil HKT 家宽" style="font-family:var(--sans);">
+      <div style="display:flex;gap:14px;">
+        <div style="flex:1;"><label>TTL（秒）</label><input type="number" name="ttl" value="120" min="60"></div>
+      </div>
+      <div class="checkrow"><input type="checkbox" name="proxied" id="px"><label for="px" style="margin:0;text-transform:none;letter-spacing:0;font-weight:500;color:var(--text);">走 Cloudflare 代理（橙云）。家宽直连请<b>不要</b>勾选。</label></div>
+    </div>
+    <div class="mfoot">
+      <button type="button" class="btn ghost" onclick="this.closest('dialog').close()">取消</button>
+      <button type="submit" class="btn">创建主机</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- 添加 Token -->
+<dialog id="tokenModal">
+  <form method="post" action="{{ url_for('add_token') }}" class="mform">
+    <div class="mhead"><h3>添加 Cloudflare Token</h3><p>粘贴一个 Zone.DNS 编辑权限的 API Token，系统会自动探测它能管理哪些域名。</p></div>
+    <div class="mbody">
+      <label>备注名称（可选）</label>
+      <input type="text" name="label" placeholder="例如：主域名系列" style="font-family:var(--sans);">
+      <label>API Token</label>
+      <input type="text" name="token" placeholder="粘贴 Cloudflare API Token" required autocomplete="off">
+      <div class="note" style="margin-top:10px;">
+        创建方法：Cloudflare 控制台 → My Profile → API Tokens → Create Token → 模板 <b>Edit zone DNS</b> → Zone Resources 选你要管的域名 → 创建。<br>
+        Token 只存在本服务器，客户端永远接触不到。
+      </div>
+    </div>
+    <div class="mfoot">
+      <button type="button" class="btn ghost" onclick="this.closest('dialog').close()">取消</button>
+      <button type="submit" class="btn">验证并添加</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- 终端流式视图 -->
+<dialog id="termModal" class="term-dialog">
+  <div class="term-top">
+    <div class="term-dots"><i></i><i></i><i></i></div>
+    <span class="term-title" id="term-title">acme.sh</span>
+    <span class="term-badge run" id="term-badge"><span class="spinner" style="border-top-color:currentColor;"></span>运行中</span>
+  </div>
+  <div class="term-body" id="term-body"></div>
+  <div class="mfoot"><button type="button" class="btn ghost" id="term-close" onclick="this.closest('dialog').close()" disabled>运行中…</button></div>
+</dialog>
+
+<!-- 证书拉取脚本 -->
+<dialog id="certHelp">
+  <div class="mhead"><h3>各机器自动拉取证书</h3><p>用本机主机的<b>更新密钥</b>做鉴权，定时拉取通配符证书，变化时自动替换并 reload。</p></div>
+  <div class="mbody">
+    <div class="clienttabs">
+      <button class="ctab on" data-cc="once">一次性拉取</button>
+      <button class="ctab" data-cc="docker">docker 定时</button>
+      <button class="ctab" data-cc="cron">crontab</button>
+    </div>
+    <div class="ccpane" data-pp="once">
+      <div class="code"><button class="copyabs" data-copy="curl -4fsSL https://{{ endpoint }}/get-cert.sh | CERT_KEY=你的主机密钥 CERT_DIR=/etc/ssl/mycerts RELOAD_CMD='nginx -s reload' bash">复制</button><span class="c"># 把 CERT_KEY 换成本机主机的更新密钥</span>
+curl -4fsSL https://{{ endpoint }}/get-cert.sh | \
+  CERT_KEY=<span class="s">你的主机密钥</span> \
+  CERT_DIR=<span class="t">/etc/ssl/mycerts</span> \
+  RELOAD_CMD=<span class="t">'nginx -s reload'</span> bash</div>
+    </div>
+    <div class="ccpane" data-pp="docker" hidden>
+      <div class="code"><button class="copyabs" data-copy="docker run -d --name cert-sync --restart=always -v /etc/ssl/mycerts:/certs -e CERT_KEY=你的主机密钥 -e CERT_API=https://{{ endpoint }} -e CERT_DIR=/certs curlimages/curl sh -c 'while true; do curl -4fsSL $CERT_API/get-cert.sh | sh; sleep 43200; done'">复制</button><span class="c"># 每12小时拉一次（证书60天有效，续期后自动同步）</span>
+docker run -d --name cert-sync --restart=always \
+  -v /etc/ssl/mycerts:/certs \
+  -e CERT_KEY=<span class="s">你的主机密钥</span> \
+  -e CERT_API=<span class="t">https://{{ endpoint }}</span> \
+  -e CERT_DIR=/certs \
+  curlimages/curl sh -c \
+  <span class="s">'while true; do curl -4fsSL $CERT_API/get-cert.sh | sh; sleep 43200; done'</span></div>
+    </div>
+    <div class="ccpane" data-pp="cron" hidden>
+      <div class="code"><button class="copyabs" data-copy="0 5 * * * CERT_KEY=你的主机密钥 CERT_DIR=/etc/ssl/mycerts RELOAD_CMD='systemctl reload nginx' bash -c 'curl -4fsSL https://{{ endpoint }}/get-cert.sh | bash'">复制</button><span class="c"># crontab -e，每天5点检查</span>
+0 5 * * * CERT_KEY=<span class="s">你的主机密钥</span> CERT_DIR=/etc/ssl/mycerts \
+  RELOAD_CMD=<span class="t">'systemctl reload nginx'</span> \
+  bash -c 'curl -4fsSL https://{{ endpoint }}/get-cert.sh | bash'</div>
+    </div>
+    <p class="note">落地文件：<span class="kbd">fullchain.pem</span> + <span class="kbd">key.pem</span>。私钥 600 权限。密钥可在各主机「接入」里查看。</p>
+  </div>
+  <div class="mfoot"><button type="button" class="btn ghost" onclick="this.closest('dialog').close()">关闭</button></div>
+</dialog>
+
+<!-- 接入说明 -->
+<dialog id="accessModal">
+  <div class="mhead"><h3>客户端接入 · <span id="acc-host" style="font-family:var(--mono);font-size:13px;color:var(--accent-ink);"></span></h3><p>兼容 dyndns2：主机名做用户名、密钥做密码，任何标准客户端都能直连。</p></div>
+  <div class="mbody">
+    <label style="font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;">更新密钥</label>
+    <div class="keyline"><code id="acc-key"></code><button class="copyabs" style="position:static;" id="acc-keycopy">复制</button></div>
+    <div class="clienttabs" style="margin-top:16px;flex-wrap:wrap;">
+      <button class="ctab on" data-c="ddns">DDNS 更新</button>
+      <button class="ctab" data-c="cert">拉取证书</button>
+      <button class="ctab" data-c="ddclient">ddclient</button>
+      <button class="ctab" data-c="router">软路由 / 群晖</button>
+    </div>
+    <div class="cpane" data-p="ddns" id="pane-ddns"></div>
+    <div class="cpane" data-p="cert" id="pane-cert" hidden></div>
+    <div class="cpane" data-p="ddclient" id="pane-ddclient" hidden></div>
+    <div class="cpane" data-p="router" id="pane-router" hidden><div class="code" id="snip-router"></div><p class="note">几乎所有软路由/NAS 内置 dyndns2，填这几项即可，无需装插件。</p></div>
+  </div>
+  <div class="mfoot"><button type="button" class="btn ghost" onclick="this.closest('dialog').close()">关闭</button></div>
+</dialog>
+
+<!-- 删除确认 -->
+<dialog id="delModal">
+  <form method="post" id="delForm" class="mform">
+    <div class="mhead"><h3>删除主机</h3><p>将删除 <b id="del-host" style="font-family:var(--mono);"></b> 及其更新密钥。</p></div>
+    <div class="mbody"><div class="checkrow"><input type="checkbox" name="dns" id="deldns" checked><label for="deldns" style="margin:0;text-transform:none;letter-spacing:0;font-weight:500;color:var(--text);">同时删除 Cloudflare 上的 A 记录</label></div></div>
+    <div class="mfoot"><button type="button" class="btn ghost" onclick="this.closest('dialog').close()">取消</button><button type="submit" class="btn danger">确认删除</button></div>
+  </form>
+</dialog>
+{% endblock %}
+
+{% block script %}
+const ENDPOINT = {{ endpoint|tojson }};
+function esc(s){return s;}
+function escAttr(s){ return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;'); }
+function escHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+// 生成一个带独立复制按钮的代码块：comment 注释行(可空)，body 展示文本，copy 实际复制文本
+function codeBlock(comment, body, copy){
+  return '<div class="code"><button class="copyabs" data-copy="'+escAttr(copy)+'">复制</button>'+
+         (comment?'<span class="c">'+escHtml(comment)+'</span>\n':'')+escHtml(body)+'</div>';
+}
+
+function openAccess(host, key){
+  document.getElementById('acc-host').textContent = host;
+  document.getElementById('acc-key').textContent = key;
+  document.getElementById('acc-keycopy').setAttribute('data-copy', key);
+  const sub = host.split('.')[0];
+  const nic = 'https://'+ENDPOINT+'/nic/update';
+
+  // ---- DDNS 更新：curl 一次性 + docker 常驻，各自可复制 ----
+  const curlOne = 'curl -4 -u '+host+':'+key+' '+nic;
+  const dockerDdns =
+    'docker run -d --name ddns-'+sub+' --restart=always \\\n'+
+    '  curlimages/curl sh -c \\\n'+
+    "  'while true; do curl -4su "+host+':'+key+' '+nic+'; sleep 300; done\'';
+  document.getElementById('pane-ddns').innerHTML =
+    codeBlock('① 测试 / 一次性更新', curlOne, curlOne) +
+    codeBlock('② docker 常驻，每5分钟自动上报公网IPv4', dockerDdns, dockerDdns);
+
+  // ---- 拉取通配符证书：docker 常驻 + curl 一次性 ----
+  const api = 'https://'+ENDPOINT;
+  const dockerCert =
+    'docker run -d --name cert-sync-'+sub+' --restart=always \\\n'+
+    '  -v /etc/ssl/mycerts:/certs \\\n'+
+    '  -e CERT_KEY='+key+' \\\n'+
+    '  -e CERT_API='+api+' \\\n'+
+    '  -e CERT_DIR=/certs \\\n'+
+    '  curlimages/curl sh -c \\\n'+
+    "  'while true; do curl -4fsSL $CERT_API/get-cert.sh | sh; sleep 43200; done'";
+  const curlCert =
+    'curl -4fsSL '+api+'/get-cert.sh | \\\n'+
+    '  CERT_KEY='+key+' CERT_DIR=/etc/ssl/mycerts \\\n'+
+    "  RELOAD_CMD='nginx -s reload' bash";
+  document.getElementById('pane-cert').innerHTML =
+    codeBlock('① docker 常驻，每12h同步通配符证书 *.'+host.split('.').slice(1).join('.'), dockerCert, dockerCert) +
+    codeBlock('② 一次性拉取到 /etc/ssl/mycerts', curlCert, curlCert) +
+    '<p class="note">落地 fullchain.pem + key.pem；证书续期后客户端自动同步。</p>';
+
+  // ---- ddclient ----
+  const ddc = 'protocol=dyndns2\nuse=web\nserver='+ENDPOINT+'\nssl=yes\nlogin='+host+'\npassword='+key+'\n'+host;
+  document.getElementById('pane-ddclient').innerHTML = codeBlock('/etc/ddclient.conf', ddc, ddc);
+
+  // ---- 软路由 ----
+  document.getElementById('snip-router').innerHTML =
+    '<span class="c"># 自定义 DDNS 服务商 (dyndns2)</span>\n'+
+    '服务器 Server   : <span class="t">'+ENDPOINT+'</span>\n'+
+    '主机名 Hostname : <span class="t">'+host+'</span>\n'+
+    '用户名 Username : <span class="t">'+host+'</span>\n'+
+    '密码   Password : <span class="s">'+key+'</span>';
+
+  document.querySelectorAll('#accessModal .ctab').forEach((x,i)=>x.classList.toggle('on',i===0));
+  document.querySelectorAll('#accessModal .cpane').forEach(p=>p.hidden=p.getAttribute('data-p')!=='ddns');
+  document.getElementById('accessModal').showModal();
+}
+function openDelete(host){
+  document.getElementById('del-host').textContent = host;
+  document.getElementById('delForm').action = '/hosts/'+host+'/delete';
+  document.getElementById('delModal').showModal();
+}
+document.querySelectorAll('#accessModal .ctab').forEach(t=>t.addEventListener('click',()=>{
+  document.querySelectorAll('#accessModal .ctab').forEach(x=>x.classList.remove('on'));
+  t.classList.add('on');const p=t.getAttribute('data-c');
+  document.querySelectorAll('#accessModal .cpane').forEach(pane=>pane.hidden=pane.getAttribute('data-p')!==p);
+}));
+
+function setStat(el, cls, html){ el.className='vstat '+cls; el.innerHTML=html; }
+const SPIN='<span class="spinner"></span>验证中';
+const OKI='<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg>';
+const BADI='<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M18 6L6 18M6 6l12 12"/></svg>';
+
+async function verifyToken(id){
+  const el=document.getElementById('vs-'+id);
+  setStat(el,'run',SPIN);
+  try{
+    const r=await fetch('/tokens/'+id+'/verify');const d=await r.json();
+    if(d.ok){ setStat(el,'ok',OKI+'有效 ('+d.status+')'); pop('Token 有效 · '+(d.zones||[]).length+' 个域名'); }
+    else{ setStat(el,'bad',BADI+(d.error||'无效')); }
+  }catch(e){ setStat(el,'bad',BADI+'请求失败'); }
+  setTimeout(()=>{el.style.opacity='0';setTimeout(()=>{el.innerHTML='';el.style.opacity='1';el.className='vstat';},400);},6000);
+}
+
+function termLine(text){
+  const div=document.createElement('span'); div.className='l';
+  let cls='';
+  if(text.startsWith('$'))cls='prompt'; else if(text.startsWith('▶'))cls='step';
+  else if(text.startsWith('✔'))cls='okl'; else if(text.startsWith('✖')||text.includes('[超时'))cls='errl';
+  if(cls)div.classList.add(cls);
+  div.textContent=text||' ';
+  return div;
+}
+async function issueCert(zone, idx){
+  const body=document.getElementById('term-body');
+  const badge=document.getElementById('term-badge');
+  const closeBtn=document.getElementById('term-close');
+  document.getElementById('term-title').textContent='acme.sh — *.'+zone;
+  body.innerHTML=''; badge.className='term-badge run'; badge.innerHTML='<span class="spinner" style="border-top-color:currentColor;"></span>运行中';
+  closeBtn.disabled=true; closeBtn.textContent='运行中…';
+  const caret=document.createElement('span'); caret.className='term-caret'; body.appendChild(caret);
+  document.getElementById('termModal').showModal();
+  let jid;
+  try{
+    const r=await fetch('/certs/'+zone+'/issue',{method:'POST'});
+    const d=await r.json(); jid=d.job;
+  }catch(e){ badge.className='term-badge err'; badge.textContent='启动失败'; closeBtn.disabled=false; closeBtn.textContent='关闭'; return; }
+
+  let cursor=0;
+  const poll=async()=>{
+    try{
+      const r=await fetch('/certs/job/'+jid+'?from='+cursor);
+      const d=await r.json();
+      if(d.lines && d.lines.length){
+        d.lines.forEach(t=>body.insertBefore(termLine(t), caret));
+        cursor=d.next; body.scrollTop=body.scrollHeight;
+      }
+      if(d.done){
+        caret.remove();
+        if(d.ok){ badge.className='term-badge ok'; badge.innerHTML=OKI+'成功'; pop('证书已签发/续期 *.'+zone); }
+        else{ badge.className='term-badge err'; badge.innerHTML=BADI+'失败'; }
+        closeBtn.disabled=false; closeBtn.textContent='关闭';
+        if(d.ok) setTimeout(()=>location.reload(),1800);
+        return;
+      }
+    }catch(e){}
+    setTimeout(poll, 700);
+  };
+  poll();
+}
+
+document.querySelectorAll('#certHelp .ctab').forEach(t=>t.addEventListener('click',()=>{
+  document.querySelectorAll('#certHelp .ctab').forEach(x=>x.classList.remove('on'));
+  t.classList.add('on');const p=t.getAttribute('data-cc');
+  document.querySelectorAll('#certHelp .ccpane').forEach(pane=>pane.hidden=pane.getAttribute('data-pp')!==p);
+}));
+
+async function testHost(host, idx){
+  const el=document.getElementById('hs-'+idx);
+  setStat(el,'run',SPIN);
+  try{
+    const r=await fetch('/hosts/'+host+'/test');const d=await r.json();
+    if(d.ok){
+      if(d.live_ip){ setStat(el,'ok',OKI+d.live_ip); pop('实际解析 '+host+' → '+d.live_ip); }
+      else{ setStat(el,'run','尚无记录'); pop(host+' 在 Cloudflare 还没有记录'); }
+    } else { setStat(el,'bad',BADI+(d.error||'失败')); }
+  }catch(e){ setStat(el,'bad',BADI+'请求失败'); }
+  setTimeout(()=>{el.style.opacity='0';setTimeout(()=>{el.innerHTML='';el.style.opacity='1';el.className='vstat';},400);},8000);
+}
+{% endblock %}
