@@ -1,11 +1,38 @@
 services:
   ddns-api:
-    build: .
-    image: ddns-api:latest
+    build:
+      context: .
+      args:
+        APP_UID: ${PUID:-10001}
+        APP_GID: ${PGID:-10001}
+    image: ddns-api:${IMAGE_TAG:-local}
     container_name: ddns-api
     restart: unless-stopped
     env_file: .env
+    init: true
     ports:
       - "127.0.0.1:8787:8787"
     volumes:
       - ./data:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 384m
+    cpus: 1.0
+    stop_grace_period: 20s
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8787/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
