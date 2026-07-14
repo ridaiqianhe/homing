@@ -1,9 +1,11 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="{{ lang }}">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{% block title %}DDNS 控制台{% endblock %} · {{ site_name }}</title>
+<meta name="csrf-token" content="{{ csrf_token|default('') }}">
+<title>{% block title %}{{ t('page_title') }}{% endblock %} · {{ site_name }}</title>
+<script>try{document.documentElement.dataset.theme=localStorage.getItem('ddns-theme')||'';}catch(e){}</script>
 <style>
   :root {
     --bg:#eef1f6; --panel:#fff; --panel-2:#f7f9fc; --border:#e0e5ee; --border-strong:#cfd6e2;
@@ -106,6 +108,15 @@
   .copyabs:hover{color:var(--accent-ink);border-color:var(--accent);}
   .keyline{display:flex;align-items:center;gap:8px;background:var(--panel-2);border:1px solid var(--border);border-radius:9px;padding:9px 11px;margin-top:6px;}
   .keyline code{font-family:var(--mono);font-size:12.5px;flex:1;word-break:break-all;}
+  .secret{filter:blur(5px);user-select:none;transition:filter .16s;}
+  .secret.revealed{filter:none;user-select:text;}
+  .field-action{position:relative;}
+  .field-action input{padding-right:46px!important;}
+  .field-action .iconbtn{position:absolute;right:5px;top:5px;width:32px;height:32px;background:transparent;}
+  .host-compose{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(150px,1fr);align-items:center;gap:8px;}
+  .host-compose .join{font-family:var(--mono);color:var(--faint);font-weight:700;}
+  .host-preview{margin-top:8px;padding:8px 10px;border:1px dashed var(--border-strong);border-radius:8px;color:var(--muted);font-size:12px;overflow-wrap:anywhere;}
+  .host-preview b{font-family:var(--mono);color:var(--accent-ink);}
   .note{font-size:12px;color:var(--faint);margin-top:12px;line-height:1.6;}
   .empty{padding:44px 20px;text-align:center;color:var(--muted);}
   .empty svg{width:34px;height:34px;color:var(--faint);margin-bottom:10px;}
@@ -156,18 +167,39 @@
   .vstat{font-size:12px;font-weight:600;display:inline-flex;align-items:center;gap:5px;transition:opacity .2s;}
   .vstat.ok{color:var(--good);} .vstat.bad{color:var(--crit);} .vstat.run{color:var(--muted);}
   @media (max-width:760px){.stats{grid-template-columns:repeat(2,1fr);}}
+  @media (max-width:520px){.wrap{padding-inline:12px}.bar{padding-inline:12px;gap:8px}.tag{display:none}.host-compose{grid-template-columns:minmax(0,1fr) auto}.host-compose select{grid-column:1/-1}.rowbtns{flex-wrap:wrap}.mfoot{padding-inline:14px}.mbody{padding-inline:14px}}
   @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;}}
 </style>
 </head>
 <body>
 {% block body %}{% endblock %}
-<div id="toast">已复制</div>
+<div id="toast"></div>
 <script>
+  let T = {{ js_i18n|tojson }};
+  const ALL_T = {{ all_i18n|default({})|tojson }};
+  function tt(k, o){ let s = T[k] || k; if(o){ for(const x in o) s = s.replace('{'+x+'}', o[x]); } return s; }
   const root=document.documentElement,tbtn=document.getElementById('theme');
-  if(tbtn)tbtn.addEventListener('click',()=>{const now=root.getAttribute('data-theme')||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');root.setAttribute('data-theme',now==='dark'?'light':'dark');});
+  if(!root.dataset.theme)root.dataset.theme=matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';
+  if(tbtn)tbtn.addEventListener('click',()=>{const next=root.dataset.theme==='dark'?'light':'dark';root.dataset.theme=next;try{localStorage.setItem('ddns-theme',next);}catch(e){}});
   let tmo;const toast=document.getElementById('toast');
   function pop(m){toast.textContent=m;toast.classList.add('show');clearTimeout(tmo);tmo=setTimeout(()=>toast.classList.remove('show'),1400);}
-  document.addEventListener('click',e=>{const c=e.target.closest('[data-copy]');if(c){navigator.clipboard?.writeText(c.getAttribute('data-copy'));pop('已复制到剪贴板');}});
+  document.addEventListener('click',e=>{const c=e.target.closest('[data-copy]');if(c){navigator.clipboard?.writeText(c.getAttribute('data-copy'));pop(T.js_copied);}});
+  const csrf=document.querySelector('meta[name="csrf-token"]')?.content||'';
+  document.querySelectorAll('form[method="post" i]').forEach(f=>{if(!f.querySelector('input[name="csrf_token"]')){const i=document.createElement('input');i.type='hidden';i.name='csrf_token';i.value=csrf;f.prepend(i);}});
+  const nativeFetch=window.fetch.bind(window);
+  window.fetch=(input,init={})=>{const method=(init.method||'GET').toUpperCase();if(!['GET','HEAD','OPTIONS'].includes(method)&&csrf){init.headers=new Headers(init.headers||{});init.headers.set('X-CSRF-Token',csrf);}return nativeFetch(input,init);};
+  function swapLanguage(next, href){
+    const from=document.documentElement.lang==='zh'?'zh':'en', dict=ALL_T[next];
+    if(!dict||!ALL_T[from]){location.href=href;return;}
+    const pairs=Object.keys(dict).map(k=>[ALL_T[from][k],dict[k]]).filter(x=>x[0]&&x[1]).sort((a,b)=>b[0].length-a[0].length);
+    const walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);let n;
+    while(n=walker.nextNode()){if(n.parentElement?.closest('script,style,code,.ip,.host'))continue;let v=n.nodeValue;pairs.forEach(([a,b])=>{v=v.split(a).join(b)});n.nodeValue=v;}
+    document.querySelectorAll('[title],[aria-label],[placeholder]').forEach(el=>['title','aria-label','placeholder'].forEach(a=>{if(el.hasAttribute(a)){let v=el.getAttribute(a);pairs.forEach(([x,y])=>{v=v.split(x).join(y)});el.setAttribute(a,v);}}));
+    let title=document.title;pairs.forEach(([x,y])=>{title=title.split(x).join(y)});document.title=title;
+    document.documentElement.lang=next;T=Object.fromEntries(Object.entries(dict).filter(([k])=>k.startsWith('js_')));try{localStorage.setItem('ddns-lang',next);}catch(e){}nativeFetch(href,{method:'POST',headers:{'X-CSRF-Token':csrf},credentials:'same-origin'}).catch(()=>{});
+    document.querySelectorAll('[data-lang-switch]').forEach(el=>{el.textContent=next==='zh'?'中':'EN';el.href=el.dataset[next==='zh'?'enHref':'zhHref'];});
+  }
+  document.addEventListener('click',e=>{const a=e.target.closest('[data-lang-switch]');if(a){e.preventDefault();swapLanguage(document.documentElement.lang==='zh'?'en':'zh',a.href);}});
   {% block script %}{% endblock %}
 </script>
 </body>

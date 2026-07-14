@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}登录{% endblock %}
+{% block title %}{{ t('login_h') }}{% endblock %}
 {% block body %}
 <div class="loginwrap">
   <div class="loginbox">
@@ -7,20 +7,21 @@
       <div class="mark" aria-hidden="true">
         <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg>
       </div>
-      <div class="brand"><b>{{ site_name }}</b><span>自建 DDNS 控制台</span></div>
+      <div class="brand"><b>{{ site_name }}</b><span>{{ t('subtitle') }}</span></div>
     </div>
 
     <form method="post" class="card mform logincard">
-      <h2>登录</h2>
-      <p class="sub">请输入管理员账号密码</p>
+      <input type="hidden" name="csrf_token" value="{{ csrf_token|default('') }}">
+      <h2>{{ t('login_h') }}</h2>
+      <p class="sub">{{ t('login_sub') }}</p>
       {% if err %}<div class="err">{{ err }}</div>{% endif %}
-      <label>账号</label>
-      <input type="text" name="username" autocomplete="username" autofocus required placeholder="管理员账号">
-      <label>密码</label>
+      <label>{{ t('login_user') }}</label>
+      <input type="text" name="username" autocomplete="username" autofocus required placeholder="{{ t('login_user_ph') }}">
+      <label>{{ t('login_pass') }}</label>
       <input type="password" name="password" autocomplete="current-password" required placeholder="••••••••">
-      <button class="btn" type="submit">登录</button>
+      <button class="btn" type="submit">{{ t('login_btn') }}</button>
     </form>
-    <p class="foot">Cloudflare 后端 · dyndns2 兼容</p>
+    <p class="foot"><a data-lang-switch data-en-href="{{ url_for('set_lang', code='en') }}" data-zh-href="{{ url_for('set_lang', code='zh') }}" href="{{ url_for('set_lang', code='zh' if lang=='en' else 'en') }}" style="color:var(--faint);">{{ 'EN' if lang=='en' else '中' }}</a> · {{ t('login_foot') }}</p>
   </div>
 </div>
 <style>
@@ -36,5 +37,6 @@
   .logincard .err{margin-top:14px;background:var(--crit-bg);color:var(--crit);font-size:12.5px;font-weight:600;padding:9px 12px;border-radius:8px;}
   .logincard .btn{width:100%;justify-content:center;margin-top:22px;padding:11px;font-size:14px;}
   .foot{text-align:center;font-size:11.5px;color:var(--faint);margin-top:18px;letter-spacing:.02em;}
+  .foot a:hover{color:var(--accent)!important;}
 </style>
 {% endblock %}
