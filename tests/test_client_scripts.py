@@ -39,6 +39,12 @@ class NativeClientTests(unittest.TestCase):
             self.assertIn("DDNS_IP_FAMILY='4'", text)
             self.assertIn("RELOAD_CMD='systemctl reload nginx'", text)
 
+    def test_explicit_empty_reload_command_is_noninteractive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.run_installer(root, "configure", RELOAD_CMD="")
+            self.assertIn("RELOAD_CMD=''", (root / "etc/ddns-panel/client.env").read_text())
+
     def test_cron_has_no_secrets_or_urls(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)

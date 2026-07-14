@@ -46,7 +46,7 @@ ensure_sources() {
 
 read_value() {
   local var="$1" prompt="$2" default="${3:-}" secret="${4:-0}" value
-  if [ -n "${!var:-}" ]; then return; fi
+  if declare -p "$var" >/dev/null 2>&1; then return; fi
   if [ "$secret" = 1 ]; then read -r -s -p "$prompt: " value; printf '\n'; else read -r -p "$prompt${default:+ [$default]}: " value; fi
   printf -v "$var" '%s' "${value:-$default}"
 }
