@@ -25,7 +25,7 @@
   {% if err %}<div style="background:var(--crit-bg);color:var(--crit);font-size:13px;font-weight:600;padding:10px 14px;border-radius:9px;margin-bottom:18px;">{{ err }}</div>{% endif %}
 
   <div class="stats">
-    <div class="tile"><div class="k">{{ t('s_hosts') }}</div><div class="v">{{ stats.total }}</div><div class="sub">{{ stats.proxied }} {{ t('proxied_word') }} · {{ stats.total - stats.proxied }} {{ t('dnsonly_word') }}</div></div>
+    <div class="tile"><div class="k">{{ t('s_hosts') }}</div><div class="v">{{ stats.hosts }}</div><div class="sub">{{ stats.total }} {{ t('record_slots') }} · {{ stats.proxied }} {{ t('proxied_word') }}</div></div>
     <div class="tile"><div class="k">{{ t('s_status') }}</div><div class="v"><span class="dot good"></span>{{ stats.good }} <small>/ {{ stats.total }} {{ t('healthy_word') }}</small></div><div class="sub">{{ t('stale_n', n=stats.stale) }}</div></div>
     <div class="tile"><div class="k">{{ t('s_proto') }}</div><div class="v" style="font-size:17px;padding-top:7px;">dyndns2</div><div class="sub">{{ t('s_proto_sub') }}</div></div>
     <div class="tile"><div class="k">{{ t('s_cf') }}</div>
@@ -94,6 +94,7 @@
               <span class="vstat" id="cs-{{ loop.index }}"></span>
               <button class="mini" onclick='issueCert({{ c.id|tojson }}, {{ c.target|tojson }}, {{ loop.index }})'><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M20.5 9A9 9 0 0 0 5.6 5.6L1 10"/></svg>{{ t('renew') }}</button>
               <button class="mini" onclick='openCertHelp({{ c.id|tojson }}, {{ c.target|tojson }}, {{ c.scope|tojson }})'><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 17l6-6-6-6M12 19h8"/></svg>{{ t('pull_script') }}</button>
+              <form method="post" action="{{ url_for('cert_delete', cert_id=c.id) }}" onsubmit="return confirm('{{ t('cert_delete_confirm') }}')"><button class="mini danger" type="submit">{{ t('delete') }}</button></form>
             </div>
           </td>
         </tr>
@@ -208,7 +209,7 @@
         {% for host in hostnames %}<option value="single|{{ host }}">{{ t('cert_scope_single') }} · {{ host }}</option>{% endfor %}
         {% for z in zones %}<option value="wildcard|{{ z }}">{{ t('cert_scope_wildcard') }} · *.{{ z }}</option>{% endfor %}
       </select>
-      <div class="note" id="cert-scope-note" style="margin-top:10px;color:var(--warn);">{{ t('cert_wildcard_warning') }}</div>
+      <div class="note" id="cert-scope-note" style="margin-top:10px;color:var(--warn);" {% if hostnames %}hidden{% endif %}>{{ t('cert_wildcard_warning') }}</div>
     </div>
     <div class="mfoot"><button type="button" class="btn ghost" onclick="this.closest('dialog').close()">{{ t('cancel') }}</button><button type="submit" class="btn">{{ t('cert_issue_now') }}</button></div>
   </form>

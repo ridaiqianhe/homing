@@ -24,6 +24,7 @@ ADMIN_USER   = os.environ.get("ADMIN_USER", "admin")
 ADMIN_PASS   = os.environ.get("ADMIN_PASS", "")
 DATA_FILE    = os.environ.get("DATA_FILE", "/app/data/data.json")
 CF_API = "https://api.cloudflare.com/client/v4"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
@@ -105,7 +106,7 @@ def set_lang(code):
 @app.after_request
 def no_cache(resp):
     # 面板含内联JS，禁止缓存以免客户端拿到旧脚本
-    if resp.mimetype == "text/html" or request.path.startswith(("/cert", "/api/", "/nic/", "/v3/")):
+    if resp.mimetype == "text/html" or request.path.startswith(("/cert", "/client/", "/api/", "/nic/", "/v3/")):
         resp.headers["Cache-Control"] = "no-store, must-revalidate"
         resp.headers["Pragma"] = "no-cache"
     resp.headers.setdefault("X-Content-Type-Options", "nosniff")
@@ -532,7 +533,7 @@ def cert_create():
                 managed_hosts=d.get("hosts", {}).keys(), managed_zones=known_zones(d).keys())
         except CertificateError as exc:
             return jsonify(ok=False, error=str(exc)), 400
-        d["certs"][cert["id"]] = cert
+        d["certs"].setdefault(cert["id"], cert)
         save(d)
     return jsonify(ok=True, certificate=cert["id"])
 
@@ -653,7 +654,7 @@ def get_cert_script():
 def native_client_script(name):
     if name not in {"install.sh", "ddns-update.sh", "cert-sync.sh"}:
         return Response("not found\n", status=404, mimetype="text/plain")
-    return send_file(os.path.join("/app/client", name), mimetype="text/x-shellscript")
+    return send_file(os.path.join(BASE_DIR, "client", name), mimetype="text/x-shellscript")
 
 
 @app.route("/tokens", methods=["POST"])

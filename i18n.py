@@ -16,6 +16,7 @@ TR = {
     "footer_proto": ("dyndns2 compatible", "协议 dyndns2 兼容"),
     # stats
     "s_hosts": ("Managed hosts", "托管主机"),
+    "record_slots": ("record slots", "个记录槽位"),
     "proxied_word": ("proxied", "个代理"),
     "dnsonly_word": ("DNS-only", "个仅 DNS"),
     "s_status": ("Status", "状态"),
@@ -53,6 +54,7 @@ TR = {
     "cert_target": ("Certificate scope and target", "证书范围与目标"),
     "cert_wildcard_warning": ("Wildcard private keys can impersonate every first-level subdomain in the zone. Distribute them only to trusted gateways.", "通配符私钥可用于冒充该主域名下所有一级子域名，只应分发给可信网关。"),
     "cert_issue_now": ("Create and issue", "创建并签发"),
+    "cert_delete_confirm": ("Delete this certificate object? Deployed copies are not removed.", "删除此证书对象？已部署到客户端的副本不会被删除。"),
     "c_covered": ("Covered domains", "覆盖域名"),
     "c_status": ("Status", "状态"),
     "c_expiry": ("Time left", "剩余有效期"),

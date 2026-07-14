@@ -71,6 +71,14 @@ class Phase2AppTests(unittest.TestCase):
         self.assertNotEqual(single.get_json()["certificate"], wildcard.get_json()["certificate"])
         self.assertEqual(len(panel.load()["certs"]), 2)
 
+    def test_native_client_scripts_are_served_without_secrets(self):
+        response = self.client.get("/client/install.sh")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("no-store", response.headers["Cache-Control"])
+        self.assertIn(b"DDNS_IP_FAMILY", response.data)
+        response.close()
+        self.assertEqual(self.client.get("/client/unknown.sh").status_code, 404)
+
 
 if __name__ == "__main__":
     unittest.main()
