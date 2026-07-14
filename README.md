@@ -50,3 +50,13 @@ CERT_KEY='rotated-client-key' CERT_API='https://ddns.example.com' \
 ```
 
 Protect the script's environment and service definition. Do not put `CERT_KEY` directly in a cron command; load it from a root-owned `0600` environment file.
+
+## Native client (Docker not required)
+
+The interactive native client installs DDNS updates and certificate synchronization using cron or systemd timers. It supports one-shot runs, custom endpoints and intervals, a custom certificate directory and reload command, diagnostics, reconfiguration, and uninstall. Credentials remain in a root-owned `0600` environment file and are sent only in request headers.
+
+```sh
+sudo ./client/install.sh
+```
+
+See [`client/README.md`](client/README.md) for non-interactive commands and test-root/dry-run options.
