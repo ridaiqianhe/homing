@@ -57,6 +57,7 @@ The interactive native client installs DDNS updates and certificate synchronizat
 
 ```sh
 sudo ./client/install.sh
+# or: curl -fsSL https://ddns.227755.xyz/client/install.sh | sudo bash
 ```
 
 See [`client/README.md`](client/README.md) for non-interactive commands and test-root/dry-run options.

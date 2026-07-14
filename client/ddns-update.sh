@@ -15,6 +15,12 @@ CONFIG="${DDNS_CLIENT_CONFIG:-/etc/ddns-panel/client.env}"
 endpoint="${DDNS_ENDPOINT%/}/api/update"
 curl_args=(--fail --silent --show-error --connect-timeout "${CONNECT_TIMEOUT:-10}" --max-time "${MAX_TIME:-30}")
 [ "${ALLOW_HTTP:-0}" = 1 ] || curl_args+=(--proto '=https' --tlsv1.2)
+case "${DDNS_IP_FAMILY:-auto}" in
+  4) curl_args+=(--ipv4) ;;
+  6) curl_args+=(--ipv6) ;;
+  auto) ;;
+  *) echo '[ddns] DDNS_IP_FAMILY must be 4, 6, or auto' >&2; exit 2 ;;
+esac
 
 # With no explicit address the panel derives it from the request source.
 if [ -n "${DDNS_IP:-}" ]; then

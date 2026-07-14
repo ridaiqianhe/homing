@@ -3,6 +3,7 @@ import pathlib
 import stat
 import subprocess
 import tempfile
+import shutil
 import unittest
 
 
@@ -17,6 +18,7 @@ class NativeClientTests(unittest.TestCase):
             "DDNS_CLIENT_ROOT": str(root),
             "DDNS_ENDPOINT": "https://panel.example.test",
             "DDNS_API_KEY": "ddns secret",
+            "DDNS_IP_FAMILY": "4",
             "CERT_ENDPOINT": "https://panel.example.test",
             "CERT_TOKEN": "cert secret",
             "CERT_DIR": "/etc/ssl/private/panel",
@@ -34,6 +36,7 @@ class NativeClientTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(config.stat().st_mode), 0o600)
             text = config.read_text()
             self.assertIn("DDNS_API_KEY='ddns secret'", text)
+            self.assertIn("DDNS_IP_FAMILY='4'", text)
             self.assertIn("RELOAD_CMD='systemctl reload nginx'", text)
 
     def test_cron_has_no_secrets_or_urls(self):
@@ -57,6 +60,60 @@ class NativeClientTests(unittest.TestCase):
         self.assertNotIn('-H "X-Api-Key:', ddns)
         self.assertNotIn('-H "Authorization:', cert)
         self.assertNotIn("?key=", ddns + cert)
+        self.assertIn('4) curl_args+=(--ipv4)', ddns)
+        self.assertIn('6) curl_args+=(--ipv6)', ddns)
+        self.assertIn('auto) ;;', ddns)
+
+    def test_remote_bootstrap_is_https_and_validates_downloads(self):
+        installer = INSTALLER.read_text()
+        self.assertIn('case "$INSTALL_BASE" in https://*', installer)
+        self.assertIn("--proto '=https' --tlsv1.2", installer)
+        self.assertIn('bash -n "$DOWNLOAD_DIR/$name"', installer)
+        self.assertIn('DDNS_INSTALL_BASE:-https://ddns.227755.xyz/client', installer)
+
+    def test_remote_bootstrap_installs_missing_companions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = pathlib.Path(tmp)
+            isolated = base / "bootstrap"
+            fake_bin = base / "bin"
+            root = base / "root"
+            isolated.mkdir()
+            fake_bin.mkdir()
+            shutil.copy2(INSTALLER, isolated / "install.sh")
+            fake_curl = fake_bin / "curl"
+            fake_curl.write_text("""#!/usr/bin/env bash
+set -eu
+out=''
+url=''
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift 2 ;;
+    http*) url="$1"; shift ;;
+    *) shift ;;
+  esac
+done
+cp "$FIXTURE_DIR/${url##*/}" "$out"
+""")
+            fake_curl.chmod(0o755)
+            env = os.environ.copy()
+            env.update({
+                "PATH": f"{fake_bin}:{env['PATH']}",
+                "FIXTURE_DIR": str(ROOT / "client"),
+                "DDNS_CLIENT_ROOT": str(root),
+                "DDNS_ENDPOINT": "https://panel.example.test",
+                "DDNS_API_KEY": "secret",
+                "DDNS_IP_FAMILY": "6",
+                "CERT_ENDPOINT": "https://panel.example.test",
+                "CERT_TOKEN": "cert-secret",
+                "CERT_DIR": "/etc/certs",
+                "RELOAD_CMD": "true",
+                "INTERVAL_MINUTES": "5",
+            })
+            subprocess.run(["bash", str(isolated / "install.sh"), "cron"], env=env,
+                           text=True, capture_output=True, check=True)
+            installed = root / "usr/local/lib/ddns-panel"
+            self.assertTrue((installed / "ddns-update.sh").is_file())
+            self.assertTrue((installed / "cert-sync.sh").is_file())
 
     def test_systemd_units_have_no_secrets(self):
         with tempfile.TemporaryDirectory() as tmp:

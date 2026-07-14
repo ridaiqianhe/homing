@@ -13,6 +13,9 @@ SYSTEMD_DIR="$ROOT$SYSTEMD"
 CRON_FILE="$ROOT$CRON"
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DRY_RUN="${DDNS_CLIENT_DRY_RUN:-0}"
+INSTALL_BASE="${DDNS_INSTALL_BASE:-https://ddns.227755.xyz/client}"
+DOWNLOAD_DIR=""
+trap '[ -z "$DOWNLOAD_DIR" ] || rm -rf "$DOWNLOAD_DIR"' EXIT
 
 say() { printf '%s\n' "$*"; }
 run() { if [ "$DRY_RUN" = 1 ]; then printf '[dry-run]'; printf ' %q' "$@"; printf '\n'; else "$@"; fi; }
@@ -20,6 +23,21 @@ need_root() { [ -n "$ROOT" ] || [ "$(id -u)" = 0 ] || { say 'Run as root (or set
 have_systemd() { [ -n "$ROOT" ] || { command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; }; }
 service_user() { if [ -n "$ROOT" ]; then printf root; else printf root; fi; }
 shell_quote() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
+
+ensure_sources() {
+  [ -r "$SOURCE_DIR/ddns-update.sh" ] && [ -r "$SOURCE_DIR/cert-sync.sh" ] && return
+  case "$INSTALL_BASE" in https://*) ;; *) say 'DDNS_INSTALL_BASE must use HTTPS.' >&2; exit 4;; esac
+  command -v curl >/dev/null 2>&1 || { say 'curl is required for remote installation.' >&2; exit 4; }
+  DOWNLOAD_DIR="$(mktemp -d)"
+  local name
+  for name in ddns-update.sh cert-sync.sh; do
+    curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+      "$INSTALL_BASE/$name" -o "$DOWNLOAD_DIR/$name"
+    bash -n "$DOWNLOAD_DIR/$name" || { say "Downloaded $name failed validation." >&2; exit 4; }
+    chmod 700 "$DOWNLOAD_DIR/$name"
+  done
+  SOURCE_DIR="$DOWNLOAD_DIR"
+}
 
 read_value() {
   local var="$1" prompt="$2" default="${3:-}" secret="${4:-0}" value
@@ -32,6 +50,8 @@ write_config() {
   need_root
   read_value DDNS_ENDPOINT 'DDNS panel endpoint' 'https://ddns.227755.xyz'
   read_value DDNS_API_KEY 'DDNS API key (empty to disable DDNS)' '' 1
+  read_value DDNS_IP_FAMILY 'DDNS slot IP family (4, 6, or auto)' 'auto'
+  case "$DDNS_IP_FAMILY" in 4|6|auto) ;; *) say 'IP family must be 4, 6, or auto.'; exit 2;; esac
   read_value CERT_ENDPOINT 'Certificate endpoint' "$DDNS_ENDPOINT"
   read_value CERT_TOKEN 'Certificate token (empty to disable certificate sync)' '' 1
   read_value CERT_DIR 'Certificate destination' '/etc/ssl/ddns-panel'
@@ -42,6 +62,7 @@ write_config() {
   {
     printf 'DDNS_ENDPOINT=%s\n' "$(shell_quote "$DDNS_ENDPOINT")"
     printf 'DDNS_API_KEY=%s\n' "$(shell_quote "$DDNS_API_KEY")"
+    printf 'DDNS_IP_FAMILY=%s\n' "$(shell_quote "$DDNS_IP_FAMILY")"
     printf 'CERT_ENDPOINT=%s\n' "$(shell_quote "$CERT_ENDPOINT")"
     printf 'CERT_TOKEN=%s\n' "$(shell_quote "$CERT_TOKEN")"
     printf 'CERT_DIR=%s\n' "$(shell_quote "$CERT_DIR")"
@@ -52,6 +73,7 @@ write_config() {
 
 install_files() {
   need_root
+  ensure_sources
   run install -d -m 755 "$BIN_DIR"
   run install -m 755 "$SOURCE_DIR/ddns-update.sh" "$BIN_DIR/ddns-update.sh"
   run install -m 755 "$SOURCE_DIR/cert-sync.sh" "$BIN_DIR/cert-sync.sh"
