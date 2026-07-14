@@ -115,6 +115,16 @@ cp "$FIXTURE_DIR/${url##*/}" "$out"
             self.assertTrue((installed / "ddns-update.sh").is_file())
             self.assertTrue((installed / "cert-sync.sh").is_file())
 
+    def test_stdin_bootstrap_does_not_require_bash_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["DDNS_CLIENT_ROOT"] = tmp
+            result = subprocess.run(
+                ["bash", "-s", "--", "status"], input=INSTALLER.read_text(),
+                env=env, text=True, capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_systemd_units_have_no_secrets(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)

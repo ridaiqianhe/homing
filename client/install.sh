@@ -11,7 +11,12 @@ ENV_FILE="$ROOT$ETC/client.env"
 STATE_FILE="$ROOT$ETC/install.state"
 SYSTEMD_DIR="$ROOT$SYSTEMD"
 CRON_FILE="$ROOT$CRON"
-SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_SOURCE="${BASH_SOURCE[0]:-}"
+if [ -n "$SCRIPT_SOURCE" ] && [ -f "$SCRIPT_SOURCE" ]; then
+  SOURCE_DIR="$(cd "$(dirname "$SCRIPT_SOURCE")" && pwd)"
+else
+  SOURCE_DIR=""
+fi
 DRY_RUN="${DDNS_CLIENT_DRY_RUN:-0}"
 INSTALL_BASE="${DDNS_INSTALL_BASE:-https://ddns.227755.xyz/client}"
 DOWNLOAD_DIR=""
@@ -25,7 +30,7 @@ service_user() { if [ -n "$ROOT" ]; then printf root; else printf root; fi; }
 shell_quote() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
 
 ensure_sources() {
-  [ -r "$SOURCE_DIR/ddns-update.sh" ] && [ -r "$SOURCE_DIR/cert-sync.sh" ] && return
+  [ -n "$SOURCE_DIR" ] && [ -r "$SOURCE_DIR/ddns-update.sh" ] && [ -r "$SOURCE_DIR/cert-sync.sh" ] && return
   case "$INSTALL_BASE" in https://*) ;; *) say 'DDNS_INSTALL_BASE must use HTTPS.' >&2; exit 4;; esac
   command -v curl >/dev/null 2>&1 || { say 'curl is required for remote installation.' >&2; exit 4; }
   DOWNLOAD_DIR="$(mktemp -d)"
