@@ -19,8 +19,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir --disable-pip-version-check -r requirements.txt
-COPY --chown=app:app app.py i18n.py get-cert.sh ./
+COPY --chown=app:app app.py i18n.py certificates.py dns_slots.py get-cert.sh ./
 COPY --chown=app:app templates ./templates
+COPY --chown=app:app client ./client
 RUN mkdir -p /app/data && chown app:app /app/data && chmod 0750 /app/data
 
 USER app:app

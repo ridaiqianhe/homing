@@ -186,6 +186,7 @@ def upsert_slot(
     ip: str,
     *,
     now: int | None = None,
+    reserved_record_ids: set[str] | None = None,
 ) -> SlotResult:
     """Create, bind, or update exactly the record owned by ``slot``."""
     ip = normalize_ip_for_slot(slot, ip)
@@ -199,6 +200,8 @@ def upsert_slot(
     else:
         query = urllib.parse.urlencode({"type": record_type, "name": hostname})
         records = _provider_result(cf_client("GET", f"/zones/{zone_id}/dns_records?{query}", token)) or []
+        reserved = reserved_record_ids or set()
+        records = [record for record in records if record.get("id") not in reserved]
         if len(records) > 1:
             raise SlotConflict("multiple matching DNS records; bind a record ID explicitly")
         record = records[0] if records else None

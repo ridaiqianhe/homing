@@ -99,6 +99,17 @@ class DnsSlotTests(unittest.TestCase):
         self.assertEqual(result.record_id, "created-1")
         self.assertEqual(slot["record_id"], "created-1")
 
+    def test_reserved_record_is_not_reused_by_another_slot(self):
+        slot = new_slot("A", key="second")
+        cf = FakeCloudflare([
+            {"id": "already-owned", "type": "A", "name": "multi.example.com",
+             "content": "192.0.2.1", "ttl": 120, "proxied": False},
+        ])
+        result = upsert_slot(cf, "z1", "token", "multi.example.com", slot, "192.0.2.2",
+                             reserved_record_ids={"already-owned"})
+        self.assertEqual(result.status, "good")
+        self.assertNotEqual(slot["record_id"], "already-owned")
+
     def test_delete_targets_only_bound_record(self):
         slot = new_slot("A", record_id="r2")
         cf = FakeCloudflare([

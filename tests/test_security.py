@@ -16,6 +16,9 @@ class SecurityTests(unittest.TestCase):
             "SECRET_KEY": "test-secret",
         })
         cls.mod = importlib.import_module("app")
+        cls.mod.DATA_FILE = os.environ["DATA_FILE"]
+        cls.mod.ADMIN_USER = os.environ["ADMIN_USER"]
+        cls.mod.ADMIN_PASS = os.environ["ADMIN_PASS"]
         cls.mod.app.config.update(TESTING=True, SERVER_NAME="example.test", PREFERRED_URL_SCHEME="https")
 
     @classmethod
@@ -77,16 +80,17 @@ class SecurityTests(unittest.TestCase):
     def test_certificate_token_can_be_rotated_and_revoked(self):
         self.login()
         headers = self.csrf_headers()
-        rotated = self.client.post("/certs/example.com/token", base_url="https://example.test", headers=headers)
+        cert_id = next(iter(self.mod.load()["certs"]))
+        rotated = self.client.post(f"/certs/{cert_id}/token", base_url="https://example.test", headers=headers)
         token = rotated.get_json()["token"]
         self.assertNotEqual(token, "cert-secret")
-        self.assertEqual(self.mod.load()["certs"]["example.com"]["download_token"], token)
+        self.assertTrue(self.mod.load()["certs"][cert_id].get("download_token_hash"))
         old = self.client.get("/cert", base_url="https://example.test",
                               headers={"Authorization": "Bearer cert-secret"})
         self.assertEqual(old.status_code, 403)
-        revoked = self.client.delete("/certs/example.com/token", base_url="https://example.test", headers=headers)
+        revoked = self.client.delete(f"/certs/{cert_id}/token", base_url="https://example.test", headers=headers)
         self.assertEqual(revoked.status_code, 200)
-        self.assertNotIn("download_token", self.mod.load()["certs"]["example.com"])
+        self.assertNotIn("download_token_hash", self.mod.load()["certs"][cert_id])
 
     def test_invalid_hostname_is_not_added(self):
         self.login()

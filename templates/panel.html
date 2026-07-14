@@ -73,6 +73,7 @@
 
   <div class="sec-head" style="justify-content:space-between;">
     <div style="display:flex;align-items:baseline;gap:10px;"><h2>{{ t('cert_title') }}</h2><span class="count">{{ t('cert_sub') }}</span></div>
+    {% if zones %}<button class="mini" onclick="document.getElementById('certCreateModal').showModal()">+ {{ t('cert_add') }}</button>{% endif %}
   </div>
   <div class="card" style="margin-bottom:30px;">
     {% if certs %}
@@ -81,7 +82,7 @@
       <tbody>
         {% for c in certs %}
         <tr>
-          <td>{% for dm in c.domains %}<span class="host" style="margin-right:8px;">{{ dm }}</span>{% endfor %}</td>
+          <td><span class="pill {{ 'warn' if c.scope == 'wildcard' else 'good' }}">{{ t('cert_scope_' + c.scope) }}</span> {% for dm in c.domains %}<span class="host" style="margin-right:8px;">{{ dm }}</span>{% endfor %}</td>
           <td>
             {% if c.status == 'ok' %}<span class="pill good"><span class="d"></span>{{ t('cert_valid') }}</span>
             {% elif c.status == 'warn' %}<span class="pill warn"><span class="d"></span>{{ t('cert_expiring') }}</span>
@@ -91,8 +92,8 @@
           <td>
             <div class="rowbtns" style="align-items:center;">
               <span class="vstat" id="cs-{{ loop.index }}"></span>
-              <button class="mini" onclick='issueCert({{ c.zone|tojson }}, {{ loop.index }})'><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M20.5 9A9 9 0 0 0 5.6 5.6L1 10"/></svg>{{ t('renew') }}</button>
-              <button class="mini" onclick='openCertHelp({{ c.zone|tojson }})'><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 17l6-6-6-6M12 19h8"/></svg>{{ t('pull_script') }}</button>
+              <button class="mini" onclick='issueCert({{ c.id|tojson }}, {{ c.target|tojson }}, {{ loop.index }})'><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M20.5 9A9 9 0 0 0 5.6 5.6L1 10"/></svg>{{ t('renew') }}</button>
+              <button class="mini" onclick='openCertHelp({{ c.id|tojson }}, {{ c.target|tojson }}, {{ c.scope|tojson }})'><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 17l6-6-6-6M12 19h8"/></svg>{{ t('pull_script') }}</button>
             </div>
           </td>
         </tr>
@@ -106,9 +107,7 @@
       <div style="font-size:13px;margin-top:4px;">{{ t('cert_empty_desc')|safe }}</div>
       {% if zones %}
       <div style="margin-top:14px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap;">
-        {% for z in zones %}
-        <button class="btn" onclick='issueCert({{ z|tojson }}, 0)'>{{ t('cert_issue', z=z) }}</button>
-        {% endfor %}
+        <button class="btn" onclick="document.getElementById('certCreateModal').showModal()">{{ t('cert_add') }}</button>
       </div>
       <div class="vstat" id="cs-0" style="margin-top:12px;justify-content:center;"></div>
       {% else %}<div style="font-size:12px;margin-top:8px;color:var(--warn);">{{ t('cert_need_token') }}</div>{% endif %}
@@ -116,17 +115,18 @@
     {% endif %}
   </div>
 
-  <div class="sec-head"><h2>{{ t('host_title') }}</h2><span class="count">{{ stats.total }} hosts</span></div>
+  <div class="sec-head"><h2>{{ t('host_title') }}</h2><span class="count">{{ stats.hosts }} hosts · {{ stats.total }} records</span></div>
 
   <div class="card">
     {% if rows %}
     <div class="tablescroll">
       <table>
-        <thead><tr><th>{{ t('c_hostname') }}</th><th>{{ t('c_ip') }}</th><th>{{ t('c_status') }}</th><th>{{ t('c_updated') }}</th><th>{{ t('c_line') }}</th><th style="text-align:right;">{{ t('c_actions') }}</th></tr></thead>
+        <thead><tr><th>{{ t('c_hostname') }}</th><th>{{ t('record_type') }}</th><th>{{ t('c_ip') }}</th><th>{{ t('c_status') }}</th><th>{{ t('c_updated') }}</th><th>{{ t('c_line') }}</th><th style="text-align:right;">{{ t('c_actions') }}</th></tr></thead>
         <tbody>
           {% for r in rows %}
           <tr>
             <td><span class="host">{{ r.sub }}<span class="z">{{ r.zsuffix }}</span>{% if r.label %}<span class="lbl">{{ r.label }}</span>{% endif %}</span></td>
+            <td><span class="pill {{ 'good' if r.type == 'AAAA' else 'pending' }}">{{ r.type }}</span></td>
             <td>{% if r.ip %}<span class="ip">{{ r.ip }}</span>{% else %}<span class="ip none">—</span>{% endif %}</td>
             <td>
               {% if r.status == 'good' %}<span class="pill good"><span class="d"></span>{{ t('st_good') }}</span>
@@ -138,14 +138,14 @@
             <td>
               <div class="rowbtns" style="align-items:center;">
                 <span class="vstat" id="hs-{{ loop.index }}" data-host="{{ r.host }}"></span>
-                <button class="mini" onclick='testHost({{ r.host|tojson }}, {{ loop.index }})' title="{{ t('test_title') }}">
+                <button class="mini" onclick='testHost({{ r.host|tojson }}, {{ r.slot_id|tojson }}, {{ loop.index }})' title="{{ t('test_title') }}">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>{{ t('test') }}</button>
-                <button class="mini" onclick='openAccess({{ r.host|tojson }}, {{ r.key|tojson }})'>
+                <button class="mini" onclick='openAccess({{ r.host|tojson }}, {{ r.key|tojson }}, {{ r.type|tojson }})'>
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 17l6-6-6-6M12 19h8"/></svg>{{ t('connect') }}</button>
-                <form method="post" action="{{ url_for('rotate', host=r.host) }}" onsubmit="return confirm('{{ t('rotate_confirm', host=r.host) }}')" style="display:inline;">
+                <form method="post" action="{{ url_for('rotate', host=r.host, slot_id=r.slot_id) }}" onsubmit="return confirm('{{ t('rotate_confirm', host=r.host) }}')" style="display:inline;">
                   <button class="mini" type="submit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M1 20v-6h6M20.5 9A9 9 0 0 0 5.6 5.6L1 10m22 4l-4.6 4.4A9 9 0 0 1 3.5 15"/></svg>{{ t('rotate') }}</button>
                 </form>
-                <button class="mini danger" onclick='openDelete({{ r.host|tojson }})'>
+                <button class="mini danger" onclick='openDelete({{ r.host|tojson }}, {{ r.slot_id|tojson }}, {{ r.type|tojson }})'>
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>{{ t('delete') }}</button>
               </div>
             </td>
@@ -186,6 +186,7 @@
       <label>{{ t('ah_label') }}</label>
       <input type="text" name="label" placeholder="{{ t('ah_label_ph') }}" style="font-family:var(--sans);">
       <div style="display:flex;gap:14px;">
+        <div style="flex:1;"><label>{{ t('record_type') }}</label><select name="record_type"><option value="A">A · IPv4</option><option value="AAAA">AAAA · IPv6</option></select></div>
         <div style="flex:1;"><label>{{ t('ah_ttl') }}</label><input type="number" name="ttl" value="120" min="60"></div>
       </div>
       <div class="checkrow"><input type="checkbox" name="proxied" id="px"><label for="px" style="margin:0;text-transform:none;letter-spacing:0;font-weight:500;color:var(--text);">{{ t('ah_proxied')|safe }}</label></div>
@@ -194,6 +195,22 @@
       <button type="button" class="btn ghost" onclick="this.closest('dialog').close()">{{ t('cancel') }}</button>
       <button type="submit" class="btn">{{ t('ah_create') }}</button>
     </div>
+  </form>
+</dialog>
+
+<!-- create certificate -->
+<dialog id="certCreateModal">
+  <form class="mform" onsubmit="createCertificate(event)">
+    <div class="mhead"><h3>{{ t('cert_add') }}</h3><p>{{ t('cert_mode_desc') }}</p></div>
+    <div class="mbody">
+      <label>{{ t('cert_target') }}</label>
+      <select id="cert-choice" required>
+        {% for host in hostnames %}<option value="single|{{ host }}">{{ t('cert_scope_single') }} · {{ host }}</option>{% endfor %}
+        {% for z in zones %}<option value="wildcard|{{ z }}">{{ t('cert_scope_wildcard') }} · *.{{ z }}</option>{% endfor %}
+      </select>
+      <div class="note" id="cert-scope-note" style="margin-top:10px;color:var(--warn);">{{ t('cert_wildcard_warning') }}</div>
+    </div>
+    <div class="mfoot"><button type="button" class="btn ghost" onclick="this.closest('dialog').close()">{{ t('cancel') }}</button><button type="submit" class="btn">{{ t('cert_issue_now') }}</button></div>
   </form>
 </dialog>
 
@@ -300,28 +317,29 @@ function codeBlock(comment, body, copy){
          (comment?'<span class="c">'+escHtml(comment)+'</span>\n':'')+escHtml(body)+'</div>';
 }
 
-function openAccess(host, key){
-  accessState={host,key};
+function openAccess(host, key, type){
+  accessState={host,key,type};
   document.getElementById('acc-host').textContent = host;
   document.getElementById('acc-key').textContent = key;
   document.getElementById('acc-key').classList.remove('revealed');
   document.getElementById('acc-reveal').textContent = tt('js_show_secret');
   document.getElementById('acc-keycopy').setAttribute('data-copy', key);
-  renderAccess(host,key,false);
+  renderAccess(host,key,type,false);
   document.querySelectorAll('#accessModal .ctab').forEach((x,i)=>x.classList.toggle('on',i===0));
   document.querySelectorAll('#accessModal .cpane').forEach(p=>p.hidden=p.getAttribute('data-p')!=='ddns');
   document.getElementById('accessModal').showModal();
 }
-function renderAccess(host,key,revealed){
+function renderAccess(host,key,type,revealed){
   const shownKey=revealed?key:'••••••••••••••••••••••••';
   const sub = host.split('.')[0];
   const nic = 'https://'+ENDPOINT+'/nic/update';
 
-  const curlOne = 'curl -4 -u '+host+':'+shownKey+' '+nic;
+  const family=type==='AAAA'?'-6':'-4';
+  const curlOne = 'curl '+family+' -u '+host+':'+shownKey+' '+nic;
   const dockerDdns =
     'docker run -d --name ddns-'+sub+' --restart=always \\\n'+
     '  curlimages/curl sh -c \\\n'+
-    "  'while true; do curl -4su "+host+':'+shownKey+' '+nic+'; sleep 300; done\'';
+    "  'while true; do curl "+family+" -su "+host+':'+shownKey+' '+nic+'; sleep 300; done\'';
   document.getElementById('pane-ddns').innerHTML =
     codeBlock('① '+tt('js_c_test'), curlOne, curlOne) +
     codeBlock('② '+tt('js_c_docker_ddns'), dockerDdns, dockerDdns);
@@ -339,20 +357,20 @@ function renderAccess(host,key,revealed){
 document.getElementById('acc-reveal')?.addEventListener('click',()=>{
   if(!accessState)return;const keyEl=document.getElementById('acc-key');const reveal=!keyEl.classList.contains('revealed');
   keyEl.classList.toggle('revealed',reveal);document.getElementById('acc-reveal').textContent=tt(reveal?'js_hide_secret':'js_show_secret');
-  renderAccess(accessState.host,accessState.key,reveal);clearTimeout(accessTimer);
-  if(reveal)accessTimer=setTimeout(()=>{keyEl.classList.remove('revealed');document.getElementById('acc-reveal').textContent=tt('js_show_secret');renderAccess(accessState.host,accessState.key,false);},30000);
+  renderAccess(accessState.host,accessState.key,accessState.type,reveal);clearTimeout(accessTimer);
+  if(reveal)accessTimer=setTimeout(()=>{keyEl.classList.remove('revealed');document.getElementById('acc-reveal').textContent=tt('js_show_secret');renderAccess(accessState.host,accessState.key,accessState.type,false);},30000);
 });
 document.getElementById('accessModal')?.addEventListener('close',()=>{clearTimeout(accessTimer);accessState=null;});
 document.querySelectorAll('[data-toggle-secret]').forEach(btn=>btn.addEventListener('click',()=>{const input=document.getElementById(btn.dataset.toggleSecret);const showing=input.type==='text';input.type=showing?'password':'text';btn.title=btn.ariaLabel=tt(showing?'js_show_secret':'js_hide_secret');if(!showing)setTimeout(()=>{input.type='password';btn.title=btn.ariaLabel=tt('js_show_secret');},30000);}));
 const prefix=document.getElementById('host-prefix'),zone=document.getElementById('host-zone'),full=document.getElementById('full-hostname'),preview=document.getElementById('host-preview');
 function composeHost(){if(!prefix||!zone||!full)return;const p=prefix.value.trim().toLowerCase().replace(/^\.+|\.+$/g,'');const value=p&&zone.value?p+'.'+zone.value:'';full.value=value;preview.textContent=value||((prefix.placeholder||'host')+'.'+(zone.value||''));}
 prefix?.addEventListener('input',composeHost);zone?.addEventListener('change',composeHost);composeHost();
-let certZone='';
-function openCertHelp(zone){certZone=zone;document.getElementById('cert-zone').textContent='*.'+zone;const token=document.getElementById('cert-token');token.textContent='••••••••••••••••••••••••';token.classList.remove('revealed');const copy=document.getElementById('cert-token-copy');copy.disabled=true;copy.removeAttribute('data-copy');document.getElementById('certHelp').showModal();}
-document.getElementById('cert-token-create')?.addEventListener('click',async()=>{if(!certZone)return;const btn=document.getElementById('cert-token-create');btn.disabled=true;try{const r=await fetch('/certs/'+encodeURIComponent(certZone)+'/token',{method:'POST'});const d=await r.json();if(!r.ok||!d.token)throw new Error(d.error||tt('js_req_fail'));const el=document.getElementById('cert-token');el.textContent=d.token;el.classList.add('revealed');const copy=document.getElementById('cert-token-copy');copy.disabled=false;copy.setAttribute('data-copy',d.token);pop(tt('js_cert_token_ready'));setTimeout(()=>{el.textContent='••••••••••••••••••••••••';el.classList.remove('revealed');},30000);}catch(e){pop(e.message||tt('js_req_fail'));}finally{btn.disabled=false;}});
-function openDelete(host){
-  document.getElementById('del-host').textContent = host;
-  document.getElementById('delForm').action = '/hosts/'+host+'/delete';
+let certId='';
+function openCertHelp(id,target,scope){certId=id;document.getElementById('cert-zone').textContent=(scope==='wildcard'?'*.':'')+target;const token=document.getElementById('cert-token');token.textContent='••••••••••••••••••••••••';token.classList.remove('revealed');const copy=document.getElementById('cert-token-copy');copy.disabled=true;copy.removeAttribute('data-copy');document.getElementById('certHelp').showModal();}
+document.getElementById('cert-token-create')?.addEventListener('click',async()=>{if(!certId)return;const btn=document.getElementById('cert-token-create');btn.disabled=true;try{const r=await fetch('/certs/'+encodeURIComponent(certId)+'/token',{method:'POST'});const d=await r.json();if(!r.ok||!d.token)throw new Error(d.error||tt('js_req_fail'));const el=document.getElementById('cert-token');el.textContent=d.token;el.classList.add('revealed');const copy=document.getElementById('cert-token-copy');copy.disabled=false;copy.setAttribute('data-copy',d.token);pop(tt('js_cert_token_ready'));setTimeout(()=>{el.textContent='••••••••••••••••••••••••';el.classList.remove('revealed');},30000);}catch(e){pop(e.message||tt('js_req_fail'));}finally{btn.disabled=false;}});
+function openDelete(host,slotId,type){
+  document.getElementById('del-host').textContent = host+' · '+type;
+  document.getElementById('delForm').action = '/hosts/'+encodeURIComponent(host)+'/slots/'+encodeURIComponent(slotId)+'/delete';
   document.getElementById('delModal').showModal();
 }
 document.querySelectorAll('#accessModal .ctab').forEach(t=>t.addEventListener('click',()=>{
@@ -386,18 +404,18 @@ function termLine(text){
   div.textContent=text||' ';
   return div;
 }
-async function issueCert(zone, idx){
+async function issueCert(certId,target, idx){
   const body=document.getElementById('term-body');
   const badge=document.getElementById('term-badge');
   const closeBtn=document.getElementById('term-close');
-  document.getElementById('term-title').textContent='acme.sh — *.'+zone;
+  document.getElementById('term-title').textContent='acme.sh — '+target;
   body.innerHTML=''; badge.className='term-badge run'; badge.innerHTML='<span class="spinner" style="border-top-color:currentColor;"></span>'+tt('js_running');
   closeBtn.disabled=true; closeBtn.textContent=tt('js_running_dots');
   const caret=document.createElement('span'); caret.className='term-caret'; body.appendChild(caret);
   document.getElementById('termModal').showModal();
   let jid;
   try{
-    const r=await fetch('/certs/'+zone+'/issue',{method:'POST'});
+    const r=await fetch('/certs/'+encodeURIComponent(certId)+'/issue',{method:'POST'});
     const d=await r.json(); jid=d.job;
   }catch(e){ badge.className='term-badge err'; badge.textContent=tt('js_start_fail'); closeBtn.disabled=false; closeBtn.textContent=tt('js_close'); return; }
 
@@ -412,7 +430,7 @@ async function issueCert(zone, idx){
       }
       if(d.done){
         caret.remove();
-        if(d.ok){ badge.className='term-badge ok'; badge.innerHTML=OKI+tt('js_success'); pop(tt('js_cert_done',{zone:zone})); }
+        if(d.ok){ badge.className='term-badge ok'; badge.innerHTML=OKI+tt('js_success'); pop(tt('js_cert_done',{zone:target})); }
         else{ badge.className='term-badge err'; badge.innerHTML=BADI+tt('js_fail'); }
         closeBtn.disabled=false; closeBtn.textContent=tt('js_close');
         if(d.ok) setTimeout(()=>location.reload(),1800);
@@ -424,17 +442,26 @@ async function issueCert(zone, idx){
   poll();
 }
 
+async function createCertificate(event){
+  event.preventDefault();const choice=document.getElementById('cert-choice').value.split('|');
+  const form=new FormData();form.set('scope',choice[0]);form.set('target',choice[1]);
+  const r=await fetch('/certificates',{method:'POST',body:form});const d=await r.json();
+  if(!r.ok){pop(d.error||tt('js_req_fail'));return;}
+  document.getElementById('certCreateModal').close();issueCert(d.certificate,choice[1],0);
+}
+document.getElementById('cert-choice')?.addEventListener('change',e=>{document.getElementById('cert-scope-note').hidden=!e.target.value.startsWith('wildcard|');});
+
 document.querySelectorAll('#certHelp .ctab').forEach(t=>t.addEventListener('click',()=>{
   document.querySelectorAll('#certHelp .ctab').forEach(x=>x.classList.remove('on'));
   t.classList.add('on');const p=t.getAttribute('data-cc');
   document.querySelectorAll('#certHelp .ccpane').forEach(pane=>pane.hidden=pane.getAttribute('data-pp')!==p);
 }));
 
-async function testHost(host, idx){
+async function testHost(host, slotId, idx){
   const el=document.getElementById('hs-'+idx);
   setStat(el,'run',SPIN);
   try{
-    const r=await fetch('/hosts/'+host+'/test');const d=await r.json();
+    const r=await fetch('/hosts/'+encodeURIComponent(host)+'/slots/'+encodeURIComponent(slotId)+'/test');const d=await r.json();
     if(d.ok){
       if(d.live_ip){ setStat(el,'ok',OKI+d.live_ip); pop(tt('js_resolves',{host:host,ip:d.live_ip})); }
       else{ setStat(el,'run',tt('js_no_record')); pop(tt('js_no_record_toast',{host:host})); }

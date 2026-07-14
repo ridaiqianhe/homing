@@ -45,7 +45,14 @@ TR = {
                         "添加一个 Zone.DNS 权限的 Token，系统会自动探测它能管哪些域名"),
     # certs
     "cert_title": ("SSL certificates", "SSL 证书"),
-    "cert_sub": ("Wildcard · auto-renewed via DNS-01", "通配符 · DNS-01 自动续期"),
+    "cert_sub": ("Single-host or wildcard · DNS-01 auto-renewal", "单域名或通配符 · DNS-01 自动续期"),
+    "cert_add": ("Add certificate", "添加证书"),
+    "cert_scope_single": ("Single host", "单域名"),
+    "cert_scope_wildcard": ("Wildcard", "通配符"),
+    "cert_mode_desc": ("Choose the smallest certificate scope required by this service.", "请选择满足服务需求的最小证书范围。"),
+    "cert_target": ("Certificate scope and target", "证书范围与目标"),
+    "cert_wildcard_warning": ("Wildcard private keys can impersonate every first-level subdomain in the zone. Distribute them only to trusted gateways.", "通配符私钥可用于冒充该主域名下所有一级子域名，只应分发给可信网关。"),
+    "cert_issue_now": ("Create and issue", "创建并签发"),
     "c_covered": ("Covered domains", "覆盖域名"),
     "c_status": ("Status", "状态"),
     "c_expiry": ("Time left", "剩余有效期"),
@@ -63,6 +70,7 @@ TR = {
     # hosts
     "host_title": ("Hosts", "主机列表"),
     "c_hostname": ("Hostname", "主机名"),
+    "record_type": ("Record type", "记录类型"),
     "c_ip": ("Current IP", "当前 IP"),
     "c_updated": ("Last update", "最近更新"),
     "c_line": ("Mode", "线路"),
