@@ -8,6 +8,14 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from flask import (Flask, request, redirect, url_for, session,
                    render_template, Response, jsonify, send_file)
 from i18n import TR
+from dns_slots import (new_slot, find_slot, find_slot_by_key, migrate_hosts,
+                       normalize_ip_for_slot, upsert_slot, delete_slot_record,
+                       SlotConflict, SlotNotFound, ProviderError)
+from certificates import (new_certificate, migrate_certificate_data,
+                          rotate_download_token, revoke_download_token,
+                          authenticate_certificate, certificate_paths,
+                          acme_state_path, acme_issue_args, acme_install_args,
+                          migrate_legacy_certificate_files, CertificateError)
 
 CF_API_TOKEN = os.environ.get("CF_API_TOKEN", "").strip()
 DEFAULT_ZONE = os.environ.get("CF_ZONE_NAME", "").strip()
@@ -16,6 +24,7 @@ ADMIN_USER   = os.environ.get("ADMIN_USER", "admin")
 ADMIN_PASS   = os.environ.get("ADMIN_PASS", "")
 DATA_FILE    = os.environ.get("DATA_FILE", "/app/data/data.json")
 CF_API = "https://api.cloudflare.com/client/v4"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
@@ -32,7 +41,7 @@ _login_failures = {}
 _login_lock = threading.Lock()
 _HOST_LABEL = re.compile(r"^(?!-)[a-z0-9-]{1,63}(?<!-)$")
 
-_lock = threading.Lock()
+_lock = threading.RLock()
 _zone_cache = {}
 
 def _lang():
@@ -97,7 +106,7 @@ def set_lang(code):
 @app.after_request
 def no_cache(resp):
     # 面板含内联JS，禁止缓存以免客户端拿到旧脚本
-    if resp.mimetype == "text/html" or request.path.startswith(("/cert", "/api/", "/nic/", "/v3/")):
+    if resp.mimetype == "text/html" or request.path.startswith(("/cert", "/client/", "/api/", "/nic/", "/v3/")):
         resp.headers["Cache-Control"] = "no-store, must-revalidate"
         resp.headers["Pragma"] = "no-cache"
     resp.headers.setdefault("X-Content-Type-Options", "nosniff")
@@ -123,6 +132,8 @@ def load():
     d.setdefault("hosts", {})
     d.setdefault("tokens", [])
     d.setdefault("certs", {})
+    d, _ = migrate_hosts(d)
+    migrate_certificate_data(d)
     return d
 
 def save(d):
@@ -196,58 +207,40 @@ def valid_ttl(value, proxied=False):
 
 def is_ip(s):
     try:
-        ipaddress.IPv4Address(s); return True
+        ipaddress.ip_address(s); return True
     except Exception:
         return False
 
-def cf_upsert(host, ip, proxied, ttl):
-    d = load()
+def cf_update_slot(d, host, slot, ip):
     zmap = known_zones(d)
     zone = zone_of(host, zmap)
     if zone not in zmap:
-        return False, f"no-token-for-{zone}", None
+        raise ProviderError(f"no token for {zone}")
     token, zid = zmap[zone]
-    query = urllib.parse.urlencode({"type": "A", "name": host})
-    r = (cf("GET", f"/zones/{zid}/dns_records?{query}", token).get("result")) or []
-    payload = {"type": "A", "name": host, "content": ip, "ttl": int(ttl), "proxied": bool(proxied)}
-    if r:
-        if r[0]["content"] == ip and r[0].get("proxied") == bool(proxied):
-            return True, "nochg", ip
-        res = cf("PUT", f"/zones/{zid}/dns_records/{r[0]['id']}", token, payload)
-    else:
-        res = cf("POST", f"/zones/{zid}/dns_records", token, payload)
-    if res.get("success"):
-        return True, "good", ip
-    app.logger.warning("Cloudflare DNS update failed for %s", host)
-    return False, "provider-error", None
+    reserved = {s.get("record_id") for h in d.get("hosts", {}).values() for s in h.get("slots", [])
+                if s is not slot and s.get("record_id")}
+    return upsert_slot(cf, zid, token, host, slot, ip, reserved_record_ids=reserved)
 
-def cf_delete(host):
-    d = load()
+def cf_delete_slot(d, host, slot):
     zmap = known_zones(d)
     zone = zone_of(host, zmap)
     if zone not in zmap:
-        return
+        raise ProviderError(f"no token for {zone}")
     token, zid = zmap[zone]
-    query = urllib.parse.urlencode({"type": "A", "name": host})
-    recs = (cf("GET", f"/zones/{zid}/dns_records?{query}", token).get("result")) or []
-    for rec in recs:
-        cf("DELETE", f"/zones/{zid}/dns_records/{rec['id']}", token)
+    return delete_slot_record(cf, zid, token, slot)
 
-# ---------- 证书（acme.sh + DNS-01 通配符）----------
+# ---------- 证书（acme.sh + DNS-01，单域名或通配符）----------
 ACME = "/root/.acme.sh/acme.sh"
 ACME_CONF = "/app/data/acme"
 CERT_DIR = "/app/data/certs"
 
-def run_acme(args, token, zone_id, timeout=200):
+def run_acme(args, token, zone_id, config_home, timeout=200):
     env = dict(os.environ)
     env["CF_Token"] = token
     env["CF_Zone_ID"] = zone_id
-    cmd = ["bash", ACME, "--config-home", ACME_CONF] + args
+    os.makedirs(config_home, exist_ok=True)
+    cmd = ["bash", ACME, "--config-home", config_home] + args
     return subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=timeout)
-
-def cert_paths(zone):
-    d = os.path.join(CERT_DIR, zone)
-    return os.path.join(d, "fullchain.pem"), os.path.join(d, "key.pem")
 
 def cert_expiry(fullchain):
     try:
@@ -258,34 +251,10 @@ def cert_expiry(fullchain):
     except Exception:
         return None
 
-def issue_wildcard(zone):
-    d = load()
-    zmap = known_zones(d)
-    if zone not in zmap:
-        return False, f"no token covers {zone}"
-    token, zid = zmap[zone]
-    os.makedirs(os.path.join(CERT_DIR, zone), exist_ok=True)
-    os.makedirs(ACME_CONF, exist_ok=True)
-    r = run_acme(["--issue", "--dns", "dns_cf", "-d", f"*.{zone}", "-d", zone,
-                  "--server", "letsencrypt", "--keylength", "2048"], token, zid)
-    out = r.stdout + r.stderr
-    if ("Cert success" not in out and "Cert manually" not in out
-            and "Domains not changed" not in out and "Skipping" not in out
-            and "already" not in out.lower()):
-        return False, out.strip()[-500:]
-    fc, key = cert_paths(zone)
-    run_acme(["--install-cert", "-d", f"*.{zone}",
-              "--fullchain-file", fc, "--key-file", key, "--reloadcmd", "true"], token, zid)
-    with _lock:
-        d = load()
-        old_token = d.get("certs", {}).get(zone, {}).get("download_token")
-        d.setdefault("certs", {})[zone] = {
-            "domains": [f"*.{zone}", zone], "issued_at": int(time.time()),
-            "expires_at": cert_expiry(fc),
-            "download_token": old_token or secrets.token_urlsafe(32),
-        }
-        save(d)
-    return True, "ok"
+def cert_zone(cert, zmap):
+    target = cert["target"]
+    zone = target if cert["scope"] == "wildcard" else zone_of(target, zmap)
+    return zone if zone in zmap else None
 
 # ---- 流式任务（后台跑 acme.sh，前端轮询增量输出）----
 JOBS = {}
@@ -312,12 +281,13 @@ def _job_finish(jid, ok):
             JOBS[jid]["ok"] = ok
             JOBS[jid]["status"] = "done" if ok else "error"
 
-def run_acme_stream(jid, args, token, zone_id, timeout=220):
+def run_acme_stream(jid, args, token, zone_id, config_home, timeout=220):
     env = dict(os.environ)
     env["CF_Token"] = token
     env["CF_Zone_ID"] = zone_id
     _job_log(jid, "$ acme.sh " + " ".join(args))
-    p = subprocess.Popen(["bash", ACME, "--config-home", ACME_CONF] + args,
+    os.makedirs(config_home, exist_ok=True)
+    p = subprocess.Popen(["bash", ACME, "--config-home", config_home] + args,
                          env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                          text=True, bufsize=1)
     start = time.time()
@@ -330,33 +300,34 @@ def run_acme_stream(jid, args, token, zone_id, timeout=220):
     p.wait()
     return p.returncode
 
-def issue_job(jid, zone):
+def issue_job(jid, cert_id):
     try:
-        d = load(); zmap = known_zones(d)
-        if zone not in zmap:
-            _job_log(jid, f"✖ No Cloudflare token covers {zone}")
+        d = load(); zmap = known_zones(d); cert = d.get("certs", {}).get(cert_id)
+        if not cert:
+            _job_log(jid, "Certificate not found")
+            _job_finish(jid, False); return
+        zone = cert_zone(cert, zmap)
+        if not zone:
+            _job_log(jid, f"No Cloudflare token covers {cert['target']}")
             _job_finish(jid, False); return
         token, zid = zmap[zone]
-        os.makedirs(os.path.join(CERT_DIR, zone), exist_ok=True)
-        os.makedirs(ACME_CONF, exist_ok=True)
-        _job_log(jid, f"▶ Issuing/renewing wildcard cert for *.{zone} (Let's Encrypt · DNS-01)")
+        paths = certificate_paths(cert, CERT_DIR)
+        state = acme_state_path(cert, ACME_CONF)
+        os.makedirs(paths["directory"], exist_ok=True)
+        _job_log(jid, f"Issuing/renewing {cert['scope']} certificate for {cert['target']} (Let's Encrypt / DNS-01)")
         _job_log(jid, "  Writing _acme-challenge TXT to Cloudflare and waiting for validation…")
-        run_acme_stream(jid, ["--issue", "--dns", "dns_cf", "-d", f"*.{zone}", "-d", zone,
-                              "--server", "letsencrypt", "--keylength", "2048"], token, zid)
-        fc, key = cert_paths(zone)
-        _job_log(jid, "▶ Installing certificate locally…")
-        run_acme_stream(jid, ["--install-cert", "-d", f"*.{zone}",
-                              "--fullchain-file", fc, "--key-file", key, "--reloadcmd", "true"], token, zid)
-        ok = os.path.exists(fc)
+        run_acme_stream(jid, acme_issue_args(cert), token, zid, state)
+        _job_log(jid, "Installing certificate locally…")
+        run_acme_stream(jid, acme_install_args(cert, CERT_DIR), token, zid, state)
+        ok = os.path.exists(paths["fullchain"])
         if ok:
-            exp = cert_expiry(fc)
+            exp = cert_expiry(paths["fullchain"])
             with _lock:
                 d = load()
-                old_token = d.get("certs", {}).get(zone, {}).get("download_token")
-                d.setdefault("certs", {})[zone] = {
-                    "domains": [f"*.{zone}", zone], "issued_at": int(time.time()), "expires_at": exp,
-                    "download_token": old_token or secrets.token_urlsafe(32)}
-                save(d)
+                if cert_id in d.get("certs", {}):
+                    d["certs"][cert_id]["issued_at"] = int(time.time())
+                    d["certs"][cert_id]["expires_at"] = exp
+                    save(d)
             when = time.strftime("%Y-%m-%d", time.gmtime(exp)) if exp else "?"
             _job_log(jid, f"✔ Done! Valid until {when}. Clients auto-sync on next pull.")
         else:
@@ -369,43 +340,49 @@ def issue_job(jid, zone):
 def renew_all():
     d = load()
     zmap = known_zones(d)
-    for zone in list(d.get("certs", {})):
-        if zone in zmap:
+    for cert_id, cert in list(d.get("certs", {}).items()):
+        zone = cert_zone(cert, zmap)
+        if zone:
             token, zid = zmap[zone]
-            run_acme(["--cron"], token, zid, timeout=200)
-            fc, _ = cert_paths(zone)
-            exp = cert_expiry(fc)
+            state = acme_state_path(cert, ACME_CONF)
+            run_acme(["--cron"], token, zid, state, timeout=200)
+            paths = certificate_paths(cert, CERT_DIR)
+            exp = cert_expiry(paths["fullchain"])
             with _lock:
                 dd = load()
-                if zone in dd.get("certs", {}):
-                    dd["certs"][zone]["expires_at"] = exp
+                if cert_id in dd.get("certs", {}):
+                    dd["certs"][cert_id]["expires_at"] = exp
                     save(dd)
 
 def _renew_loop():
     while True:
         time.sleep(43200)  # 每 12h 检查一次；acme.sh 只在 <60 天时真正续期
         try: renew_all()
-        except Exception as e: log("续期检查异常:", e)
+        except Exception as e: app.logger.warning("certificate renewal check failed: %s", e)
 
 def certs_view(d):
     now = int(time.time())
     out = []
-    for zone, c in sorted(d.get("certs", {}).items()):
+    for cert_id, c in sorted(d.get("certs", {}).items()):
+        try:
+            migrate_legacy_certificate_files(c, CERT_DIR)
+        except CertificateError:
+            pass
         exp = c.get("expires_at")
         days = int((exp - now) / 86400) if exp else None
-        fc, _ = cert_paths(zone)
+        paths = certificate_paths(c, CERT_DIR)
         out.append({
-            "zone": zone, "domains": c.get("domains", []),
-            "days": days, "exp": exp, "exists": os.path.exists(fc),
+            "id": cert_id, "scope": c["scope"], "target": c["target"], "domains": c.get("domains", []),
+            "days": days, "exp": exp, "exists": os.path.exists(paths["fullchain"]),
             "status": "ok" if (days is not None and days > 20) else ("warn" if days is not None else "none"),
         })
     return out
 
 def host_for_key(d, key):
-    for hn, h in d.get("hosts", {}).items():
-        if key and hmac.compare_digest(key, h["key"]):
-            return hn
-    return None
+    try:
+        return find_slot_by_key(d, key)[0]
+    except SlotNotFound:
+        return None
 
 def client_ip():
     # 来访真实客户端IP（可能 v4 或 v6）。黄云下 CF-Connecting-IP 最权威；
@@ -490,20 +467,23 @@ def view_rows(d, lang="en"):
     now = int(time.time())
     rows = []
     for hn, h in sorted(d["hosts"].items()):
-        lu = h.get("last_update")
-        if not lu:
-            status, ago = "pending", tr("never", lang)
-        else:
-            age = now - lu
-            ago = humanize(age, lang)
-            status = "good" if age <= 1800 else "warn"
-        sub, _, rest = hn.partition(".")
-        rows.append({
-            "host": hn, "sub": sub, "zsuffix": "." + rest if rest else "",
-            "label": h.get("label", ""), "key": h["key"],
-            "proxied": h.get("proxied", False), "ttl": h.get("ttl", 120),
-            "ip": h.get("last_ip"), "ago": ago, "status": status,
-        })
+        for slot in h.get("slots", []):
+            lu = slot.get("last_update")
+            if not lu:
+                status, ago = "pending", tr("never", lang)
+            else:
+                age = now - lu
+                ago = humanize(age, lang)
+                status = "good" if age <= 1800 else "warn"
+            sub, _, rest = hn.partition(".")
+            rows.append({
+                "host": hn, "sub": sub, "zsuffix": "." + rest if rest else "",
+                "slot_id": slot["id"], "type": slot["type"],
+                "label": slot.get("label", ""), "key": slot["key"],
+                "record_id": slot.get("record_id"),
+                "proxied": slot.get("proxied", False), "ttl": slot.get("ttl", 120),
+                "ip": slot.get("last_ip"), "ago": ago, "status": status,
+            })
     return rows
 
 @app.route("/")
@@ -523,6 +503,7 @@ def index():
         })
     stats = {
         "total": len(rows),
+        "hosts": len(d.get("hosts", {})),
         "good": sum(1 for r in rows if r["status"] == "good"),
         "stale": sum(1 for r in rows if r["status"] == "warn"),
         "proxied": sum(1 for r in rows if r["proxied"]),
@@ -535,19 +516,36 @@ def index():
     elif ecode == "token-empty": err = tr("err_token_empty", lang)
     return render_template("panel.html", rows=rows, stats=stats,
                            tokens=tokens_view, zones=sorted(zmap.keys()),
-                           certs=certs_view(d), err=err,
+                           certs=certs_view(d), hostnames=sorted(d.get("hosts", {})), err=err,
                            endpoint=request.host)
 
 
 # ---------- 证书路由 ----------
-@app.route("/certs/<zone>/issue", methods=["POST"])
+@app.route("/certificates", methods=["POST"])
 @require_login
-def cert_issue(zone):
+def cert_create():
+    scope = request.form.get("scope", "")
+    target = request.form.get("target", "").strip().lower()
+    with _lock:
+        d = load()
+        try:
+            cert = new_certificate(scope, target,
+                managed_hosts=d.get("hosts", {}).keys(), managed_zones=known_zones(d).keys())
+        except CertificateError as exc:
+            return jsonify(ok=False, error=str(exc)), 400
+        d["certs"].setdefault(cert["id"], cert)
+        save(d)
+    return jsonify(ok=True, certificate=cert["id"])
+
+@app.route("/certs/<cert_id>/issue", methods=["POST"])
+@require_login
+def cert_issue(cert_id):
     d = load()
-    if not valid_zone(zone, known_zones(d)):
-        return jsonify(ok=False, error="invalid zone"), 400
-    jid = _new_job(f"Issue/renew *.{zone}")
-    threading.Thread(target=issue_job, args=(jid, zone), daemon=True).start()
+    cert = d.get("certs", {}).get(cert_id)
+    if not cert:
+        return jsonify(ok=False, error="certificate not found"), 404
+    jid = _new_job(f"Issue/renew {cert['target']}")
+    threading.Thread(target=issue_job, args=(jid, cert_id), daemon=True).start()
     return jsonify(job=jid)
 
 @app.route("/certs/job/<jid>")
@@ -561,43 +559,43 @@ def cert_job(jid):
         return jsonify(title=j["title"], lines=j["lines"][frm:], next=len(j["lines"]),
                        done=j["done"], ok=j["ok"], status=j["status"])
 
-@app.route("/certs/<zone>/delete", methods=["POST"])
+@app.route("/certs/<cert_id>/delete", methods=["POST"])
 @require_login
-def cert_delete(zone):
-    if not valid_dns_name(zone):
-        return jsonify(ok=False, error="invalid zone"), 400
+def cert_delete(cert_id):
     with _lock:
         d = load()
-        d.get("certs", {}).pop(zone, None)
+        d.get("certs", {}).pop(cert_id, None)
         save(d)
     return redirect(url_for("index"))
 
-def _cert_auth(d, zone=None):
+def _cert_auth(d, cert_hint=None):
     """Certificate tokens are independent from DDNS update credentials."""
     key = request.headers.get("X-Cert-Token", "") or request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
     if not key and LEGACY_CERT_QUERY_AUTH and request.args.get("key"):
         # Query-string secrets leak through proxy logs. Legacy mode is opt-in only.
         key = request.args.get("key", "")
-    for zname, cert in d.get("certs", {}).items():
-        token = cert.get("download_token", "")
-        if token and key and hmac.compare_digest(key, token) and (zone is None or zone == zname):
-            return zname
+    cert = authenticate_certificate(d.get("certs", {}), key)
+    if cert and (not cert_hint or cert["id"] == cert_hint):
+        return cert
     if ALLOW_LEGACY_CERT_KEY:
         host = host_for_key(d, key)
         if host:
-            candidate = zone_of(host, known_zones(d))
-            app.logger.warning("legacy DDNS key used for certificate download zone=%s", candidate)
-            return candidate if zone is None or zone == candidate else None
+            zone = zone_of(host, known_zones(d))
+            candidate = next((c for c in d.get("certs", {}).values()
+                              if c.get("scope") == "wildcard" and c.get("target") == zone), None)
+            app.logger.warning("legacy DDNS key used for certificate download zone=%s", zone)
+            return candidate if candidate and (not cert_hint or candidate["id"] == cert_hint) else None
     return None
 
 def _serve_cert(part):
-    zone_hint = request.headers.get("X-Cert-Zone", "").strip().lower() or None
+    cert_hint = request.headers.get("X-Cert-Id", "").strip() or None
     d = load()
-    zone = _cert_auth(d, zone_hint)
-    if not zone:
+    cert = _cert_auth(d, cert_hint)
+    if not cert:
         return Response("invalid certificate token\n", status=403, mimetype="text/plain")
-    fc, k = cert_paths(zone)
-    path = fc if part == "fullchain" else k
+    migrate_legacy_certificate_files(cert, CERT_DIR)
+    paths = certificate_paths(cert, CERT_DIR)
+    path = paths["fullchain"] if part == "fullchain" else paths["key"]
     if not os.path.exists(path):
         return Response("no cert issued\n", status=404, mimetype="text/plain")
     return send_file(path, mimetype="application/x-pem-file")
@@ -613,48 +611,50 @@ def cert_key():
 @app.route("/cert")
 def cert_bundle():
     d = load()
-    zone = _cert_auth(d, request.headers.get("X-Cert-Zone", "").strip().lower() or None)
-    if not zone:
+    cert = _cert_auth(d, request.headers.get("X-Cert-Id", "").strip() or None)
+    if not cert:
         return jsonify(ok=False, error="invalid certificate token"), 403
-    fc, k = cert_paths(zone)
-    if not os.path.exists(fc):
-        return jsonify(ok=False, error="no cert issued", zone=zone), 404
-    c = load().get("certs", {}).get(zone, {})
-    return jsonify(ok=True, zone=zone, expires_at=c.get("expires_at"),
-                   fullchain=open(fc).read(), key=open(k).read())
+    migrate_legacy_certificate_files(cert, CERT_DIR)
+    paths = certificate_paths(cert, CERT_DIR)
+    if not os.path.exists(paths["fullchain"]):
+        return jsonify(ok=False, error="no cert issued", certificate=cert["id"]), 404
+    return jsonify(ok=True, certificate=cert["id"], scope=cert["scope"], target=cert["target"],
+                   expires_at=cert.get("expires_at"), fullchain=open(paths["fullchain"]).read(),
+                   key=open(paths["key"]).read())
 
-@app.route("/certs/<zone>/token", methods=["POST"])
+@app.route("/certs/<cert_id>/token", methods=["POST"])
 @require_login
-def rotate_cert_token(zone):
-    if not valid_dns_name(zone):
-        return jsonify(ok=False, error="invalid zone"), 400
-    token = secrets.token_urlsafe(32)
+def rotate_cert_token(cert_id):
     with _lock:
         d = load()
-        if zone not in d.get("certs", {}):
+        cert = d.get("certs", {}).get(cert_id)
+        if not cert:
             return jsonify(ok=False, error="certificate not found"), 404
-        d["certs"][zone]["download_token"] = token
+        token = rotate_download_token(cert)
         save(d)
-    # Token is intentionally returned once and never rendered by the panel.
-    return jsonify(ok=True, zone=zone, token=token)
+    return jsonify(ok=True, certificate=cert_id, token=token)
 
-@app.route("/certs/<zone>/token", methods=["DELETE"])
+@app.route("/certs/<cert_id>/token", methods=["DELETE"])
 @require_login
-def revoke_cert_token(zone):
-    if not valid_dns_name(zone):
-        return jsonify(ok=False, error="invalid zone"), 400
+def revoke_cert_token(cert_id):
     with _lock:
         d = load()
-        cert = d.get("certs", {}).get(zone)
+        cert = d.get("certs", {}).get(cert_id)
         if cert is None:
             return jsonify(ok=False, error="certificate not found"), 404
-        cert.pop("download_token", None)
+        revoke_download_token(cert)
         save(d)
-    return jsonify(ok=True, zone=zone)
+    return jsonify(ok=True, certificate=cert_id)
 
 @app.route("/get-cert.sh")
 def get_cert_script():
     return send_file("/app/get-cert.sh", mimetype="text/x-shellscript")
+
+@app.route("/client/<name>")
+def native_client_script(name):
+    if name not in {"install.sh", "ddns-update.sh", "cert-sync.sh"}:
+        return Response("not found\n", status=404, mimetype="text/plain")
+    return send_file(os.path.join(BASE_DIR, "client", name), mimetype="text/x-shellscript")
 
 
 @app.route("/tokens", methods=["POST"])
@@ -702,25 +702,32 @@ def verify_token_api(tid):
     return jsonify(ok=False, error="invalid or revoked")
 
 
-@app.route("/hosts/<path:host>/test")
+@app.route("/hosts/<path:host>/slots/<slot_id>/test")
 @require_login
-def test_host(host):
-    """只读检查：该主机在 Cloudflare 上当前解析到什么（验证 token 能否触达）"""
+def test_host(host, slot_id):
     d = load()
-    if host not in d["hosts"]:
-        return jsonify(ok=False, error="host not found"), 404
+    try:
+        slot = find_slot(d, host, slot_id)
+    except SlotNotFound:
+        return jsonify(ok=False, error="record slot not found"), 404
     zmap = known_zones(d)
     zone = zone_of(host, zmap)
     if zone not in zmap:
         return jsonify(ok=False, error=f"no token covers {zone}")
     token, zid = zmap[zone]
-    query = urllib.parse.urlencode({"type": "A", "name": host})
-    r = cf("GET", f"/zones/{zid}/dns_records?{query}", token)
+    if slot.get("record_id"):
+        r = cf("GET", f"/zones/{zid}/dns_records/{slot['record_id']}", token)
+        recs = [r.get("result")] if r.get("result") else []
+    else:
+        query = urllib.parse.urlencode({"type": slot["type"], "name": host})
+        r = cf("GET", f"/zones/{zid}/dns_records?{query}", token)
+        recs = r.get("result") or []
     if not r.get("success"):
         return jsonify(ok=False, error="Cloudflare query failed")
-    recs = r.get("result") or []
+    if len(recs) > 1:
+        return jsonify(ok=False, error="multiple records found; update once with a bound record ID"), 409
     if recs:
-        return jsonify(ok=True, live_ip=recs[0]["content"], proxied=recs[0].get("proxied", False))
+        return jsonify(ok=True, live_ip=recs[0]["content"], type=slot["type"], proxied=recs[0].get("proxied", False))
     return jsonify(ok=True, live_ip=None)
 
 
@@ -743,6 +750,7 @@ def refresh_token(tid):
 def add_host():
     host = request.form.get("hostname", "").strip().lower().rstrip(".")
     label = request.form.get("label", "").strip()
+    record_type = request.form.get("record_type", "A").upper()
     proxied = request.form.get("proxied") == "on"
     ttl = valid_ttl(request.form.get("ttl") or 120, proxied)
     d = load()
@@ -750,56 +758,90 @@ def add_host():
     if ttl is not None and zone in known_zones(d) and host != zone:
         with _lock:
             d = load()
-            if host not in d["hosts"]:
-                d["hosts"][host] = {
-                    "label": label, "key": secrets.token_urlsafe(24),
-                    "proxied": proxied, "ttl": ttl,
-                    "last_ip": None, "last_update": None, "created": int(time.time()),
-                }
-                save(d)
-    return redirect(url_for("index"))
-
-@app.route("/hosts/<path:host>/rotate", methods=["POST"])
-@require_login
-def rotate(host):
-    if not valid_dns_name(host):
-        return jsonify(ok=False, error="invalid hostname"), 400
-    with _lock:
-        d = load()
-        if host in d["hosts"]:
-            d["hosts"][host]["key"] = secrets.token_urlsafe(24)
+            try:
+                slot = new_slot(record_type, label, proxied=proxied, ttl=ttl)
+            except ValueError:
+                return jsonify(ok=False, error="invalid record type or TTL"), 400
+            d["hosts"].setdefault(host, {"created": int(time.time()), "slots": []})
+            d["hosts"][host].setdefault("slots", []).append(slot)
             save(d)
     return redirect(url_for("index"))
 
-@app.route("/hosts/<path:host>/edit", methods=["POST"])
+@app.route("/hosts/<path:host>/slots", methods=["POST"])
 @require_login
-def edit(host):
+def add_slot(host):
+    if not valid_dns_name(host):
+        return jsonify(ok=False, error="invalid hostname"), 400
+    record_type = request.form.get("record_type", "A").upper()
+    proxied = request.form.get("proxied") == "on"
+    ttl = valid_ttl(request.form.get("ttl") or 120, proxied)
+    if ttl is None:
+        return jsonify(ok=False, error="invalid TTL"), 400
+    with _lock:
+        d = load()
+        if host not in d.get("hosts", {}):
+            return jsonify(ok=False, error="host not found"), 404
+        try:
+            d["hosts"][host]["slots"].append(new_slot(record_type, request.form.get("label", ""), proxied=proxied, ttl=ttl))
+        except ValueError as exc:
+            return jsonify(ok=False, error=str(exc)), 400
+        save(d)
+    return redirect(url_for("index"))
+
+@app.route("/hosts/<path:host>/slots/<slot_id>/rotate", methods=["POST"])
+@require_login
+def rotate(host, slot_id):
     if not valid_dns_name(host):
         return jsonify(ok=False, error="invalid hostname"), 400
     with _lock:
         d = load()
-        if host in d["hosts"]:
-            d["hosts"][host]["label"] = request.form.get("label", "").strip()
-            d["hosts"][host]["proxied"] = request.form.get("proxied") == "on"
-            ttl = valid_ttl(request.form.get("ttl") or 120, d["hosts"][host]["proxied"])
+        try:
+            find_slot(d, host, slot_id)["key"] = secrets.token_urlsafe(24)
+            save(d)
+        except SlotNotFound:
+            return jsonify(ok=False, error="record slot not found"), 404
+    return redirect(url_for("index"))
+
+@app.route("/hosts/<path:host>/slots/<slot_id>/edit", methods=["POST"])
+@require_login
+def edit(host, slot_id):
+    if not valid_dns_name(host):
+        return jsonify(ok=False, error="invalid hostname"), 400
+    with _lock:
+        d = load()
+        try:
+            slot = find_slot(d, host, slot_id)
+            slot["label"] = request.form.get("label", "").strip()
+            slot["proxied"] = request.form.get("proxied") == "on"
+            ttl = valid_ttl(request.form.get("ttl") or 120, slot["proxied"])
             if ttl is not None:
-                d["hosts"][host]["ttl"] = ttl
+                slot["ttl"] = ttl
             save(d)
+        except SlotNotFound:
+            return jsonify(ok=False, error="record slot not found"), 404
     return redirect(url_for("index"))
 
-@app.route("/hosts/<path:host>/delete", methods=["POST"])
+@app.route("/hosts/<path:host>/slots/<slot_id>/delete", methods=["POST"])
 @require_login
-def delete(host):
+def delete(host, slot_id):
     if not valid_dns_name(host):
         return jsonify(ok=False, error="invalid hostname"), 400
     also_dns = request.form.get("dns") == "on"
     with _lock:
         d = load()
-        if host in d["hosts"]:
-            del d["hosts"][host]
+        try:
+            slot = find_slot(d, host, slot_id)
+            if also_dns and slot.get("record_id"):
+                cf_delete_slot(d, host, slot)
+            slots = d["hosts"][host]["slots"]
+            d["hosts"][host]["slots"] = [s for s in slots if s.get("id") != slot_id]
+            if not d["hosts"][host]["slots"]:
+                del d["hosts"][host]
             save(d)
-    if also_dns:
-        cf_delete(host)
+        except SlotNotFound:
+            return jsonify(ok=False, error="record slot not found"), 404
+        except ProviderError:
+            return jsonify(ok=False, error="Cloudflare delete failed"), 502
     return redirect(url_for("index"))
 
 # ---------- dyndns2 协议 ----------
@@ -820,24 +862,26 @@ def nic_update():
     host = (request.args.get("hostname") or u or "").strip().lower()
     key = p or request.args.get("key", "")
     d = load()
-    h = d["hosts"].get(host) if valid_dns_name(host) else None
-    if not h:
+    if not valid_dns_name(host) or host not in d.get("hosts", {}):
         return Response("nohost", mimetype="text/plain")
-    if not key or not hmac.compare_digest(key, h["key"]):
+    try:
+        _, slot = find_slot_by_key(d, key, host)
+    except SlotNotFound:
         return Response("badauth", mimetype="text/plain")
     myip = request.args.get("myip", "").strip() or client_ip()
-    if not is_ip(myip):
+    try:
+        myip = normalize_ip_for_slot(slot, myip)
+    except ValueError:
         return Response("dnserr", mimetype="text/plain")
-    ok, res, ip = cf_upsert(host, myip, h["proxied"], h["ttl"])
-    if ok:
+    try:
         with _lock:
-            d = load()
-            if host in d["hosts"]:
-                d["hosts"][host]["last_ip"] = myip
-                d["hosts"][host]["last_update"] = int(time.time())
-                save(d)
-        return Response(f"{res} {myip}", mimetype="text/plain")
-    return Response("911", mimetype="text/plain")
+            result = cf_update_slot(d, host, slot, myip)
+            save(d)
+        return Response(f"{result.status} {myip}", mimetype="text/plain")
+    except SlotConflict:
+        return Response("conflict", status=409, mimetype="text/plain")
+    except ProviderError:
+        return Response("911", status=502, mimetype="text/plain")
 
 # ---------- 友好 JSON API（给我们自己的脚本，如 boil 换IP后带 ?ip= 即时更新）----------
 @app.route("/api/update")
@@ -847,25 +891,25 @@ def api_update():
     if not key and ALLOW_LEGACY_UPDATE_QUERY:
         key = request.args.get("key", "")
     d = load()
-    host, hobj = None, None
-    for hn, h in d["hosts"].items():
-        if key and hmac.compare_digest(key, h["key"]):
-            host, hobj = hn, h
-            break
-    if not host:
+    try:
+        host, slot = find_slot_by_key(d, key)
+    except SlotNotFound:
         return jsonify(ok=False, error="invalid key"), 403
     myip = request.args.get("ip", "").strip() or client_ip()
-    if not is_ip(myip):
-        return jsonify(ok=False, error="bad ip"), 400
-    ok, res, ip = cf_upsert(host, myip, hobj["proxied"], hobj["ttl"])
-    if ok:
+    try:
+        myip = normalize_ip_for_slot(slot, myip)
+    except ValueError as exc:
+        return jsonify(ok=False, error=str(exc)), 400
+    try:
         with _lock:
-            d = load()
-            d["hosts"][host]["last_ip"] = myip
-            d["hosts"][host]["last_update"] = int(time.time())
+            result = cf_update_slot(d, host, slot, myip)
             save(d)
-        return jsonify(ok=True, host=host, ip=myip, result=res)
-    return jsonify(ok=False, host=host, error=res), 502
+        return jsonify(ok=True, host=host, slot=slot["id"], type=slot["type"], ip=myip, result=result.status)
+    except SlotConflict as exc:
+        return jsonify(ok=False, host=host, slot=slot["id"], error=str(exc)), 409
+    except ProviderError:
+        app.logger.warning("Cloudflare DNS update failed for host=%s slot=%s", host, slot.get("id"))
+        return jsonify(ok=False, host=host, error="provider-error"), 502
 
 @app.route("/ip")
 def ip():
