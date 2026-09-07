@@ -1,6 +1,6 @@
 # Homing / DDNS Panel
 
-Self-hosted Cloudflare DDNS and wildcard certificate panel.
+Self-hosted Cloudflare DDNS and single-domain or wildcard certificate panel.
 
 ## Hardened deployment
 
@@ -41,6 +41,16 @@ Stop the new container, restore the saved Compose configuration or set `IMAGE_TA
 The origin must remain bound to `127.0.0.1:8787`. Apply the headers and rate-limit guidance in `deploy/nginx-security.conf` and `SECURITY.md`. Cloudflare SSL mode should be Full (strict). Never expose the application container directly to the Internet.
 
 ## Certificate client
+
+Each host-list row has a **Pull certificate** action. It opens a single-domain certificate for that exact hostname, including when a wildcard certificate already exists. A/AAAA records for the same hostname share that certificate; different hostnames have separate certificates, private keys, and ACME state.
+
+Issue the certificate in that dialog, then choose a client name, certificate directory, and optional service reload command. **Generate command** creates a new credential and ready-to-run commands for a one-shot pull or synchronization every six hours. Commands require Linux, root, Bash, curl, and OpenSSL; scheduled synchronization also requires an enabled cron service supporting `/etc/cron.d`.
+
+Each generated credential can be revoked independently from the authorized-client list. Creating another client does not invalidate existing clients or legacy certificate credentials. Only token hashes are stored on the panel. Generated commands are available only in the current dialog; closing it clears them. The copy action includes the credential, while the displayed command masks it unless explicitly revealed.
+
+Client configuration and scripts live in `/etc/ddns-panel/certificates/<certificate-id>/`, with a separate cron file per certificate. The default certificate directory is `/etc/ssl/ddns-panel/<hostname>/`. Configuration and private keys use mode `0600`. Credentials are sent in headers, not URLs, curl arguments, or cron entries. The client validates the hostname, certificate expiry, and matching private key before replacing files, and retries a failed service reload on its next run.
+
+Existing clients remain supported:
 
 `get-cert.sh` retrieves certificates with `Authorization: Bearer` so the key is absent from URLs and access logs:
 

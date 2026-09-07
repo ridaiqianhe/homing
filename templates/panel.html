@@ -121,7 +121,7 @@
   <div class="card">
     {% if rows %}
     <div class="tablescroll">
-      <table>
+      <table id="host-table">
         <thead><tr><th>{{ t('c_hostname') }}</th><th>{{ t('record_type') }}</th><th>{{ t('c_ip') }}</th><th>{{ t('c_status') }}</th><th>{{ t('c_updated') }}</th><th>{{ t('c_line') }}</th><th style="text-align:right;">{{ t('c_actions') }}</th></tr></thead>
         <tbody>
           {% for r in rows %}
@@ -143,6 +143,7 @@
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>{{ t('test') }}</button>
                 <button class="mini" onclick='openAccess({{ r.host|tojson }}, {{ r.key|tojson }}, {{ r.type|tojson }})'>
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 17l6-6-6-6M12 19h8"/></svg>{{ t('connect') }}</button>
+                <button class="mini host-cert-button" type="button" data-host-certificate="{{ r.host }}" data-client-label="{{ r.label or (r.type ~ '-' ~ r.slot_id[-8:]) }}" title="{{ t('cert_valid') if r.certificate and r.certificate.ready else t('cert_none') }}">{{ t('host_cert_pull') }}</button>
                 <form method="post" action="{{ url_for('rotate', host=r.host, slot_id=r.slot_id) }}" onsubmit="return confirm('{{ t('rotate_confirm', host=r.host) }}')" style="display:inline;">
                   <button class="mini" type="submit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M1 20v-6h6M20.5 9A9 9 0 0 0 5.6 5.6L1 10m22 4l-4.6 4.4A9 9 0 0 1 3.5 15"/></svg>{{ t('rotate') }}</button>
                 </form>
@@ -246,36 +247,29 @@
 
 <!-- cert pull script -->
 <dialog id="certHelp">
-  <div class="mhead"><h3>{{ t('ch_title') }} · <span id="cert-zone" class="host"></span></h3><p>{{ t('ch_desc')|safe }}</p></div>
+  <div class="mhead"><h3>{{ t('host_cert_pull') }}</h3><div id="cert-zone" class="host"></div></div>
   <div class="mbody">
-    <div class="keyline"><code id="cert-token" class="secret">••••••••••••••••••••••••</code><button class="mini" type="button" id="cert-token-create">{{ t('cert_token_create') }}</button><button class="copyabs" type="button" style="position:static" id="cert-token-copy" disabled>{{ t('copy') }}</button></div>
-    <p class="note">{{ t('cert_token_note') }}</p>
-    <div class="clienttabs">
-      <button class="ctab on" data-cc="once">{{ t('ch_once') }}</button>
-      <button class="ctab" data-cc="docker">{{ t('ch_docker') }}</button>
-      <button class="ctab" data-cc="cron">{{ t('ch_cron') }}</button>
+    <div class="cert-toolbar"><span id="cert-pull-status" class="pill pending"></span><button class="mini" id="cert-pull-issue" type="button">{{ t('cert_issue_renew') }}</button></div>
+    <p id="cert-pull-error" class="cert-error" role="alert" hidden></p>
+    <form id="cert-client-form" class="mform">
+      <label for="cert-client-label">{{ t('cert_client_label') }}</label>
+      <input id="cert-client-label" name="label" type="text" maxlength="80" required>
+      <label for="cert-directory">{{ t('cert_directory') }}</label>
+      <input id="cert-directory" name="directory" type="text" maxlength="400" required>
+      <label for="cert-reload">{{ t('cert_reload') }}</label>
+      <input id="cert-reload" name="reload_command" type="text" maxlength="1000" placeholder="systemctl reload nginx">
+      <div class="cert-toolbar cert-generate"><span class="line">Linux · root · Bash / curl / OpenSSL</span><button class="btn sm" id="cert-command-generate" type="submit" disabled>{{ t('cert_generate_command') }}</button></div>
+    </form>
+    <div id="cert-command-result" hidden>
+      <div class="clienttabs" role="tablist" aria-label="{{ t('cert_pull_mode') }}">
+        <button class="ctab" role="tab" aria-selected="false" data-cert-mode="once" type="button">{{ t('ch_once') }}</button>
+        <button class="ctab on" role="tab" aria-selected="true" data-cert-mode="cron" type="button">{{ t('cert_cron_mode') }}</button>
+      </div>
+      <div class="cert-toolbar"><button class="mini" id="cert-command-reveal" type="button">{{ t('js_show_secret') }}</button><button class="mini" id="cert-command-copy" type="button">{{ t('cert_copy_command') }}</button></div>
+      <pre class="code" id="cert-command-code"></pre>
     </div>
-    <div class="ccpane" data-pp="once">
-      <div class="code"><button class="copyabs" data-copy="curl -4fsSL https://{{ endpoint }}/get-cert.sh | CERT_KEY={{ t('your_key') }} CERT_DIR=/etc/ssl/mycerts RELOAD_CMD='nginx -s reload' bash">{{ t('copy') }}</button>curl -4fsSL https://{{ endpoint }}/get-cert.sh | \
-  CERT_KEY=<span class="s">{{ t('your_key') }}</span> \
-  CERT_DIR=<span class="t">/etc/ssl/mycerts</span> \
-  RELOAD_CMD=<span class="t">'nginx -s reload'</span> bash</div>
-    </div>
-    <div class="ccpane" data-pp="docker" hidden>
-      <div class="code"><button class="copyabs" data-copy="docker run -d --name cert-sync --restart=always -v /etc/ssl/mycerts:/certs -e CERT_KEY={{ t('your_key') }} -e CERT_API=https://{{ endpoint }} -e CERT_DIR=/certs curlimages/curl sh -c 'while true; do curl -4fsSL $CERT_API/get-cert.sh | sh; sleep 43200; done'">{{ t('copy') }}</button>docker run -d --name cert-sync --restart=always \
-  -v /etc/ssl/mycerts:/certs \
-  -e CERT_KEY=<span class="s">{{ t('your_key') }}</span> \
-  -e CERT_API=<span class="t">https://{{ endpoint }}</span> \
-  -e CERT_DIR=/certs \
-  curlimages/curl sh -c \
-  <span class="s">'while true; do curl -4fsSL $CERT_API/get-cert.sh | sh; sleep 43200; done'</span></div>
-    </div>
-    <div class="ccpane" data-pp="cron" hidden>
-      <div class="code"><button class="copyabs" data-copy="0 5 * * * CERT_KEY={{ t('your_key') }} CERT_DIR=/etc/ssl/mycerts RELOAD_CMD='systemctl reload nginx' bash -c 'curl -4fsSL https://{{ endpoint }}/get-cert.sh | bash'">{{ t('copy') }}</button>0 5 * * * CERT_KEY=<span class="s">{{ t('your_key') }}</span> CERT_DIR=/etc/ssl/mycerts \
-  RELOAD_CMD=<span class="t">'systemctl reload nginx'</span> \
-  bash -c 'curl -4fsSL https://{{ endpoint }}/get-cert.sh | bash'</div>
-    </div>
-    <p class="note">{{ t('ch_files_note')|safe }}</p>
+    <div class="cert-clients-head">{{ t('cert_authorized_clients') }}</div>
+    <ul id="cert-client-list" class="cert-clients"></ul>
   </div>
   <div class="mfoot"><button type="button" class="btn ghost" onclick="this.closest('dialog').close()">{{ t('close') }}</button></div>
 </dialog>
@@ -366,9 +360,55 @@ document.querySelectorAll('[data-toggle-secret]').forEach(btn=>btn.addEventListe
 const prefix=document.getElementById('host-prefix'),zone=document.getElementById('host-zone'),full=document.getElementById('full-hostname'),preview=document.getElementById('host-preview');
 function composeHost(){if(!prefix||!zone||!full)return;const p=prefix.value.trim().toLowerCase().replace(/^\.+|\.+$/g,'');const value=p&&zone.value?p+'.'+zone.value:'';full.value=value;preview.textContent=value||((prefix.placeholder||'host')+'.'+(zone.value||''));}
 prefix?.addEventListener('input',composeHost);zone?.addEventListener('change',composeHost);composeHost();
-let certId='';
-function openCertHelp(id,target,scope){certId=id;document.getElementById('cert-zone').textContent=(scope==='wildcard'?'*.':'')+target;const token=document.getElementById('cert-token');token.textContent='••••••••••••••••••••••••';token.classList.remove('revealed');const copy=document.getElementById('cert-token-copy');copy.disabled=true;copy.removeAttribute('data-copy');document.getElementById('certHelp').showModal();}
-document.getElementById('cert-token-create')?.addEventListener('click',async()=>{if(!certId)return;const btn=document.getElementById('cert-token-create');btn.disabled=true;try{const r=await fetch('/certs/'+encodeURIComponent(certId)+'/token',{method:'POST'});const d=await r.json();if(!r.ok||!d.token)throw new Error(d.error||tt('js_req_fail'));const el=document.getElementById('cert-token');el.textContent=d.token;el.classList.add('revealed');const copy=document.getElementById('cert-token-copy');copy.disabled=false;copy.setAttribute('data-copy',d.token);pop(tt('js_cert_token_ready'));setTimeout(()=>{el.textContent='••••••••••••••••••••••••';el.classList.remove('revealed');},30000);}catch(e){pop(e.message||tt('js_req_fail'));}finally{btn.disabled=false;}});
+let certState=null,certCommands=null,certSecret='',certRevealTimer,certRevealed=false,certMode='cron',certClientId='';
+const certDialog=document.getElementById('certHelp');
+function certError(message){const el=document.getElementById('cert-pull-error');el.textContent=message;el.hidden=!message;}
+function clearCertCommand(){clearTimeout(certRevealTimer);certCommands=null;certSecret='';certClientId='';certRevealed=false;document.getElementById('cert-command-code').textContent='';document.getElementById('cert-command-result').hidden=true;}
+function renderCertCommand(){
+  if(!certCommands)return;
+  const command=certCommands[certMode];
+  document.getElementById('cert-command-code').textContent=certRevealed?command:command.split(certSecret).join('[credential hidden]');
+  document.getElementById('cert-command-reveal').textContent=tt(certRevealed?'js_hide_secret':'js_show_secret');
+  document.querySelectorAll('[data-cert-mode]').forEach(btn=>{const active=btn.dataset.certMode===certMode;btn.classList.toggle('on',active);btn.setAttribute('aria-selected',String(active));});
+}
+function renderCertDetails(cert){
+  certState=cert;
+  const status=document.getElementById('cert-pull-status');status.className='pill '+(cert.ready?'good':'pending');status.textContent=tt(cert.ready?'js_cert_ready':'js_cert_not_ready');
+  document.getElementById('cert-command-generate').disabled=!cert.ready;
+  const list=document.getElementById('cert-client-list');list.replaceChildren();
+  if(!cert.clients.length){const item=document.createElement('li');item.className='muted';item.textContent=tt('js_cert_no_clients');list.append(item);}
+  cert.clients.forEach(client=>{
+    const item=document.createElement('li'),label=document.createElement('span'),date=document.createElement('small'),button=document.createElement('button');
+    label.textContent=client.label;label.dataset.noTranslate='';date.textContent=new Date(client.created_at*1000).toLocaleDateString();label.append(date);
+    button.type='button';button.className='mini danger';button.textContent=tt('js_cert_revoke');
+    button.addEventListener('click',async()=>{if(!confirm(tt('js_cert_revoke_confirm',{label:client.label})))return;button.disabled=true;try{const r=await fetch('/certs/'+cert.id+'/clients/'+client.id,{method:'DELETE'});if(!r.ok)throw new Error(tt('js_req_fail'));if(certClientId===client.id)clearCertCommand();await refreshCertDetails(cert.id);}catch(e){certError(e.message);button.disabled=false;}});
+    item.append(label,button);list.append(item);
+  });
+}
+async function refreshCertDetails(id){const r=await fetch('/certs/'+encodeURIComponent(id)+'/details');const d=await r.json();if(!r.ok)throw new Error(d.error||tt('js_req_fail'));if(certState?.id===id)renderCertDetails(d.certificate);}
+async function openCertHelp(id,target,scope,label=''){
+  clearCertCommand();certError('');certState={id,target,scope,ready:false,clients:[]};renderCertDetails(certState);
+  document.getElementById('cert-zone').textContent=(scope==='wildcard'?'*.':'')+target;
+  document.getElementById('cert-client-label').value=label||target;
+  document.getElementById('cert-directory').value='/etc/ssl/ddns-panel/'+(scope==='wildcard'?'wildcard-':'')+target;
+  document.getElementById('cert-reload').value='';
+  if(!certDialog.open)certDialog.showModal();
+  try{await refreshCertDetails(id);}catch(e){if(certState?.id===id)certError(e.message);}
+}
+document.querySelectorAll('[data-host-certificate]').forEach(btn=>btn.addEventListener('click',async()=>{
+  btn.disabled=true;try{const r=await fetch('/hosts/'+encodeURIComponent(btn.dataset.hostCertificate)+'/certificate',{method:'POST'});const d=await r.json();if(!r.ok)throw new Error(d.error||tt('js_req_fail'));await openCertHelp(d.certificate.id,d.certificate.target,'single',btn.dataset.clientLabel);}catch(e){pop(e.message);}finally{btn.disabled=false;}
+}));
+document.getElementById('cert-client-form').addEventListener('submit',async event=>{
+  event.preventDefault();if(!certState?.ready)return;const id=certState.id,btn=document.getElementById('cert-command-generate');btn.disabled=true;certError('');clearCertCommand();
+  try{const r=await fetch('/certs/'+id+'/clients',{method:'POST',body:new FormData(event.target)});const d=await r.json();if(!r.ok)throw new Error(d.error||tt('js_req_fail'));if(certState?.id!==id||!certDialog.open)return;certCommands=d.commands;certSecret=d.token;certClientId=d.client.id;renderCertCommand();document.getElementById('cert-command-result').hidden=false;await refreshCertDetails(id);}catch(e){if(certState?.id===id)certError(e.message);}finally{if(certState?.id===id)btn.disabled=!certState.ready;}
+});
+document.getElementById('cert-client-form').addEventListener('input',clearCertCommand);
+document.querySelectorAll('[data-cert-mode]').forEach(btn=>btn.addEventListener('click',()=>{certMode=btn.dataset.certMode;renderCertCommand();}));
+document.getElementById('cert-command-reveal').addEventListener('click',()=>{certRevealed=!certRevealed;clearTimeout(certRevealTimer);renderCertCommand();if(certRevealed)certRevealTimer=setTimeout(()=>{certRevealed=false;renderCertCommand();},30000);});
+document.getElementById('cert-command-copy').addEventListener('click',async()=>{if(!certCommands)return;try{await navigator.clipboard.writeText(certCommands[certMode]);pop(tt('js_copied'));}catch(e){certError(tt('js_copy_failed'));}});
+document.getElementById('cert-pull-issue').addEventListener('click',async()=>{if(!certState)return;const cert=certState,btn=document.getElementById('cert-pull-issue');btn.disabled=true;try{await issueCert(cert.id,cert.target,0,false);if(certState?.id===cert.id)await refreshCertDetails(cert.id);}finally{btn.disabled=false;}});
+certDialog.addEventListener('close',()=>{clearCertCommand();certState=null;document.getElementById('cert-client-list').replaceChildren();document.getElementById('cert-client-form').reset();certError('');});
+document.addEventListener('languagechange',()=>{if(certState)renderCertDetails(certState);renderCertCommand();});
 function openDelete(host,slotId,type){
   document.getElementById('del-host').textContent = host+' · '+type;
   document.getElementById('delForm').action = '/hosts/'+encodeURIComponent(host)+'/slots/'+encodeURIComponent(slotId)+'/delete';
@@ -405,7 +445,7 @@ function termLine(text){
   div.textContent=text||' ';
   return div;
 }
-async function issueCert(certId,target, idx){
+async function issueCert(certId,target, idx,reloadPage=true){
   const body=document.getElementById('term-body');
   const badge=document.getElementById('term-badge');
   const closeBtn=document.getElementById('term-close');
@@ -417,14 +457,16 @@ async function issueCert(certId,target, idx){
   let jid;
   try{
     const r=await fetch('/certs/'+encodeURIComponent(certId)+'/issue',{method:'POST'});
-    const d=await r.json(); jid=d.job;
+    const d=await r.json();if(!r.ok||!d.job)throw new Error(d.error||tt('js_start_fail'));jid=d.job;
   }catch(e){ badge.className='term-badge err'; badge.textContent=tt('js_start_fail'); closeBtn.disabled=false; closeBtn.textContent=tt('js_close'); return; }
 
   let cursor=0;
+  return new Promise(resolve=>{
   const poll=async()=>{
     try{
       const r=await fetch('/certs/job/'+jid+'?from='+cursor);
       const d=await r.json();
+      if(!r.ok)throw new Error(d.error||tt('js_req_fail'));
       if(d.lines && d.lines.length){
         d.lines.forEach(t=>body.insertBefore(termLine(t), caret));
         cursor=d.next; body.scrollTop=body.scrollHeight;
@@ -434,13 +476,15 @@ async function issueCert(certId,target, idx){
         if(d.ok){ badge.className='term-badge ok'; badge.innerHTML=OKI+tt('js_success'); pop(tt('js_cert_done',{zone:target})); }
         else{ badge.className='term-badge err'; badge.innerHTML=BADI+tt('js_fail'); }
         closeBtn.disabled=false; closeBtn.textContent=tt('js_close');
-        if(d.ok) setTimeout(()=>location.reload(),1800);
+        if(d.ok&&reloadPage) setTimeout(()=>location.reload(),1800);
+        resolve(d.ok);
         return;
       }
-    }catch(e){}
+    }catch(e){caret.remove();badge.className='term-badge err';badge.textContent=tt('js_req_fail');closeBtn.disabled=false;closeBtn.textContent=tt('js_close');resolve(false);return;}
     setTimeout(poll, 700);
   };
   poll();
+  });
 }
 
 async function createCertificate(event){
@@ -451,12 +495,6 @@ async function createCertificate(event){
   document.getElementById('certCreateModal').close();issueCert(d.certificate,choice[1],0);
 }
 document.getElementById('cert-choice')?.addEventListener('change',e=>{document.getElementById('cert-scope-note').hidden=!e.target.value.startsWith('wildcard|');});
-
-document.querySelectorAll('#certHelp .ctab').forEach(t=>t.addEventListener('click',()=>{
-  document.querySelectorAll('#certHelp .ctab').forEach(x=>x.classList.remove('on'));
-  t.classList.add('on');const p=t.getAttribute('data-cc');
-  document.querySelectorAll('#certHelp .ccpane').forEach(pane=>pane.hidden=pane.getAttribute('data-pp')!==p);
-}));
 
 async function testHost(host, slotId, idx){
   const el=document.getElementById('hs-'+idx);
