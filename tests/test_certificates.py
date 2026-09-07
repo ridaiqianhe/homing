@@ -44,6 +44,10 @@ class CertificateModelTests(unittest.TestCase):
         self.assertEqual(certificates.acme_issue_args(single).count("-d"), 1)
         self.assertEqual(certificates.acme_issue_args(wildcard).count("-d"), 2)
         self.assertIn("*.example.com", certificates.acme_issue_args(wildcard))
+        for cert in (single, wildcard):
+            issue = certificates.acme_issue_args(cert)
+            install = certificates.acme_install_args(cert, "/tmp/certs")
+            self.assertEqual(issue[issue.index("-d") + 1], install[install.index("-d") + 1])
 
     def test_legacy_files_move_without_overwriting_new_output(self):
         cert = certificates.new_certificate("wildcard", "example.com")

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 CONFIG="${DDNS_CLIENT_CONFIG:-/etc/ddns-panel/client.env}"
 [ -r "$CONFIG" ] || { echo "[cert] config not readable: $CONFIG" >&2; exit 1; }
@@ -12,26 +13,43 @@ CONFIG="${DDNS_CLIENT_CONFIG:-/etc/ddns-panel/client.env}"
   echo '[cert] token contains unsupported characters' >&2; exit 1;
 }
 CERT_DIR="${CERT_DIR:-/etc/ssl/ddns-panel}"
+command -v openssl >/dev/null || { echo '[cert] openssl is required' >&2; exit 1; }
 
 mkdir -p "$CERT_DIR"
-tmp="$(mktemp -d)"
+if command -v flock >/dev/null; then
+  exec 9>"$CERT_DIR/.sync.lock"
+  flock -n 9 || exit 0
+fi
+tmp="$(mktemp -d "$CERT_DIR/.sync.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 
 curl_args=(--fail --silent --show-error --connect-timeout "${CONNECT_TIMEOUT:-10}" --max-time "${MAX_TIME:-30}")
 [ "${ALLOW_HTTP:-0}" = 1 ] || curl_args+=(--proto '=https' --tlsv1.2)
 base="${CERT_ENDPOINT%/}"
-printf 'header = "Authorization: Bearer %s"\n' "$CERT_TOKEN" | curl --config - "${curl_args[@]}" "$base/cert/fullchain" -o "$tmp/fullchain.pem"
-printf 'header = "Authorization: Bearer %s"\n' "$CERT_TOKEN" | curl --config - "${curl_args[@]}" "$base/cert/key" -o "$tmp/key.pem"
+cert_path="$base/cert"
+if [ -n "${CERT_ID:-}" ]; then
+  [[ "$CERT_ID" =~ ^cert_[0-9a-f]{32}$ ]] || { echo '[cert] invalid certificate ID' >&2; exit 1; }
+  cert_path="$cert_path/$CERT_ID"
+fi
+printf 'header = "Authorization: Bearer %s"\n' "$CERT_TOKEN" | curl --config - "${curl_args[@]}" "$cert_path/fullchain" -o "$tmp/fullchain.pem"
+printf 'header = "Authorization: Bearer %s"\n' "$CERT_TOKEN" | curl --config - "${curl_args[@]}" "$cert_path/key" -o "$tmp/key.pem"
 
 grep -q 'BEGIN CERTIFICATE' "$tmp/fullchain.pem" || { echo '[cert] invalid certificate response' >&2; exit 1; }
 grep -Eq 'BEGIN ([A-Z ]+)?PRIVATE KEY' "$tmp/key.pem" || { echo '[cert] invalid private key response' >&2; exit 1; }
+openssl x509 -in "$tmp/fullchain.pem" -noout -checkend 0 >/dev/null
+if [ -n "${CERT_HOSTNAME:-}" ]; then
+  openssl x509 -in "$tmp/fullchain.pem" -noout -checkhost "$CERT_HOSTNAME" >/dev/null
+fi
+openssl x509 -in "$tmp/fullchain.pem" -pubkey -noout > "$tmp/cert-public.pem"
+openssl pkey -in "$tmp/key.pem" -pubout > "$tmp/key-public.pem"
+cmp -s "$tmp/cert-public.pem" "$tmp/key-public.pem" || { echo '[cert] certificate and key do not match' >&2; exit 1; }
 
 changed=0
 for name in fullchain.pem key.pem; do
   if ! cmp -s "$tmp/$name" "$CERT_DIR/$name" 2>/dev/null; then
     mode=600; [ "$name" = fullchain.pem ] && mode=644
-    install -m "$mode" "$tmp/$name" "$CERT_DIR/$name.new"
-    mv -f "$CERT_DIR/$name.new" "$CERT_DIR/$name"
+    chmod "$mode" "$tmp/$name"
+    mv -f "$tmp/$name" "$CERT_DIR/$name"
     changed=1
   fi
 done
@@ -40,7 +58,11 @@ chmod 600 "$CERT_DIR/key.pem"
 
 if [ "$changed" = 1 ]; then
   printf '[cert] %s certificate updated in %s\n' "$(date '+%F %T')" "$CERT_DIR"
-  [ -z "${RELOAD_CMD:-}" ] || /bin/sh -c "$RELOAD_CMD"
+  touch "$CERT_DIR/.reload-pending"
 else
   printf '[cert] %s certificate unchanged\n' "$(date '+%F %T')"
+fi
+if [ -f "$CERT_DIR/.reload-pending" ]; then
+  [ -z "${RELOAD_CMD:-}" ] || /bin/sh -c "$RELOAD_CMD"
+  rm -f "$CERT_DIR/.reload-pending"
 fi

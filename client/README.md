@@ -1,6 +1,8 @@
 # Native client (no Docker)
 
-Requirements: Bash 4+, curl, and root access for installation. `openssl` is not required. The client works with cron and with systemd timers; use cron on OpenWrt, NAS appliances, containers, and other systems without systemd.
+Requirements: Bash 4+, curl, and root access for installation. Certificate synchronization also requires OpenSSL to validate the hostname, expiry, and matching private key. The client works with cron and with systemd timers; the cron setup requires a scheduler supporting `/etc/cron.d`.
+
+For independent certificates on multiple domains, use **Pull certificate** in each panel host row. The generated commands install separate configurations under `/etc/ddns-panel/certificates/<certificate-id>/` and separate cron jobs. Each client credential can be revoked individually in the panel. The general-purpose installer below continues to use one combined DDNS/certificate configuration.
 
 ```sh
 sudo ./client/install.sh

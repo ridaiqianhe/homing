@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # 自建 DDNS 服务：登录面板 + 自定义主机 + dyndns2 协议 + Cloudflare 后端
-import os, json, ipaddress, secrets, hmac, threading, time, base64, subprocess, calendar, re
+import os, json, ipaddress, secrets, hmac, threading, time, base64, subprocess, calendar, re, signal
 import urllib.request, urllib.error
 import urllib.parse
 from functools import wraps
@@ -15,7 +15,9 @@ from certificates import (new_certificate, migrate_certificate_data,
                           rotate_download_token, revoke_download_token,
                           authenticate_certificate, certificate_paths,
                           acme_state_path, acme_issue_args, acme_install_args,
-                          migrate_legacy_certificate_files, CertificateError)
+                          migrate_legacy_certificate_files, create_download_client,
+                          certificate_id, CertificateError)
+from certificate_commands import pull_commands
 
 CF_API_TOKEN = os.environ.get("CF_API_TOKEN", "").strip()
 DEFAULT_ZONE = os.environ.get("CF_ZONE_NAME", "").strip()
@@ -106,7 +108,7 @@ def set_lang(code):
 @app.after_request
 def no_cache(resp):
     # 面板含内联JS，禁止缓存以免客户端拿到旧脚本
-    if resp.mimetype == "text/html" or request.path.startswith(("/cert", "/client/", "/api/", "/nic/", "/v3/")):
+    if resp.mimetype == "text/html" or request.path.startswith(("/cert", "/hosts/", "/client/", "/api/", "/nic/", "/v3/")):
         resp.headers["Cache-Control"] = "no-store, must-revalidate"
         resp.headers["Pragma"] = "no-cache"
     resp.headers.setdefault("X-Content-Type-Options", "nosniff")
@@ -258,14 +260,20 @@ def cert_zone(cert, zmap):
 
 # ---- 流式任务（后台跑 acme.sh，前端轮询增量输出）----
 JOBS = {}
-_jobs_lock = threading.Lock()
+_jobs_lock = threading.RLock()
+_cert_operation_locks = {}
+
+def certificate_lock(cert_id):
+    with _jobs_lock:
+        return _cert_operation_locks.setdefault(cert_id, threading.Lock())
 
 def _new_job(title):
     jid = secrets.token_hex(6)
     with _jobs_lock:
         # 只保留最近 20 个任务
         for old in list(JOBS)[:-19]:
-            JOBS.pop(old, None)
+            if JOBS[old]["done"]:
+                JOBS.pop(old, None)
         JOBS[jid] = {"title": title, "lines": [], "done": False, "ok": False, "status": "running"}
     return jid
 
@@ -289,18 +297,29 @@ def run_acme_stream(jid, args, token, zone_id, config_home, timeout=220):
     os.makedirs(config_home, exist_ok=True)
     p = subprocess.Popen(["bash", ACME, "--config-home", config_home] + args,
                          env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                         text=True, bufsize=1)
-    start = time.time()
-    for line in iter(p.stdout.readline, ""):
-        _job_log(jid, line.rstrip("\n"))
-        if time.time() - start > timeout:
-            p.kill()
+                         text=True, bufsize=1, start_new_session=True)
+    def terminate():
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
             _job_log(jid, "[timeout, killed]")
-            break
-    p.wait()
+        except ProcessLookupError:
+            pass
+    timer = threading.Timer(timeout, terminate)
+    timer.start()
+    try:
+        for line in iter(p.stdout.readline, ""):
+            _job_log(jid, line.rstrip("\n").replace(token, "[redacted]"))
+        p.wait()
+    finally:
+        timer.cancel()
+        p.stdout.close()
     return p.returncode
 
 def issue_job(jid, cert_id):
+    with certificate_lock(cert_id):
+        _issue_certificate(jid, cert_id)
+
+def _issue_certificate(jid, cert_id):
     try:
         d = load(); zmap = known_zones(d); cert = d.get("certs", {}).get(cert_id)
         if not cert:
@@ -316,12 +335,17 @@ def issue_job(jid, cert_id):
         os.makedirs(paths["directory"], exist_ok=True)
         _job_log(jid, f"Issuing/renewing {cert['scope']} certificate for {cert['target']} (Let's Encrypt / DNS-01)")
         _job_log(jid, "  Writing _acme-challenge TXT to Cloudflare and waiting for validation…")
-        run_acme_stream(jid, acme_issue_args(cert), token, zid, state)
+        result = run_acme_stream(jid, acme_issue_args(cert), token, zid, state)
+        # acme.sh returns 2 when an existing certificate is not due for renewal.
+        if result not in (0, 2):
+            _job_log(jid, "Certificate issuance failed")
+            _job_finish(jid, False); return
         _job_log(jid, "Installing certificate locally…")
-        run_acme_stream(jid, acme_install_args(cert, CERT_DIR), token, zid, state)
-        ok = os.path.exists(paths["fullchain"])
+        result = run_acme_stream(jid, acme_install_args(cert, CERT_DIR), token, zid, state)
+        exp = cert_expiry(paths["fullchain"])
+        ok = result == 0 and exp is not None and exp > time.time() and os.path.isfile(paths["key"])
         if ok:
-            exp = cert_expiry(paths["fullchain"])
+            os.chmod(paths["key"], 0o600)
             with _lock:
                 d = load()
                 if cert_id in d.get("certs", {}):
@@ -342,17 +366,21 @@ def renew_all():
     zmap = known_zones(d)
     for cert_id, cert in list(d.get("certs", {}).items()):
         zone = cert_zone(cert, zmap)
-        if zone:
-            token, zid = zmap[zone]
-            state = acme_state_path(cert, ACME_CONF)
-            run_acme(["--cron"], token, zid, state, timeout=200)
-            paths = certificate_paths(cert, CERT_DIR)
-            exp = cert_expiry(paths["fullchain"])
-            with _lock:
-                dd = load()
-                if cert_id in dd.get("certs", {}):
-                    dd["certs"][cert_id]["expires_at"] = exp
-                    save(dd)
+        operation_lock = certificate_lock(cert_id)
+        if zone and operation_lock.acquire(blocking=False):
+            try:
+                token, zid = zmap[zone]
+                state = acme_state_path(cert, ACME_CONF)
+                run_acme(["--cron"], token, zid, state, timeout=200)
+                paths = certificate_paths(cert, CERT_DIR)
+                exp = cert_expiry(paths["fullchain"])
+                with _lock:
+                    dd = load()
+                    if cert_id in dd.get("certs", {}):
+                        dd["certs"][cert_id]["expires_at"] = exp
+                        save(dd)
+            finally:
+                operation_lock.release()
 
 def _renew_loop():
     while True:
@@ -377,6 +405,17 @@ def certs_view(d):
             "status": "ok" if (days is not None and days > 20) else ("warn" if days is not None else "none"),
         })
     return out
+
+def certificate_details(cert):
+    paths = certificate_paths(cert, CERT_DIR)
+    expiry = cert.get("expires_at")
+    return {"id": cert["id"], "target": cert["target"], "scope": cert["scope"],
+            "ready": bool(expiry and expiry > time.time() and
+                          os.path.isfile(paths["fullchain"]) and os.path.isfile(paths["key"])),
+            "expires_at": expiry,
+            "clients": [{"id": client["id"], "label": client["label"],
+                         "created_at": client["created_at"]}
+                        for client in cert.get("download_clients", {}).values()]}
 
 def host_for_key(d, key):
     try:
@@ -492,6 +531,9 @@ def index():
     lang = _lang()
     d = load()
     rows = view_rows(d, lang)
+    for row in rows:
+        cert = d["certs"].get(certificate_id("single", row["host"]))
+        row["certificate"] = certificate_details(cert) if cert else None
     zmap = known_zones(d)
     tokens_view = []
     for t in d.get("tokens", []):
@@ -521,6 +563,58 @@ def index():
 
 
 # ---------- 证书路由 ----------
+@app.route("/hosts/<path:host>/certificate", methods=["POST"])
+@require_login
+def host_certificate(host):
+    with _lock:
+        d = load()
+        if host not in d["hosts"]:
+            return jsonify(ok=False, error="host not found"), 404
+        cert = new_certificate("single", host, managed_hosts=d["hosts"])
+        if cert["id"] not in d["certs"]:
+            d["certs"][cert["id"]] = cert
+            save(d)
+        return jsonify(ok=True, certificate=certificate_details(d["certs"][cert["id"]]))
+
+@app.route("/certs/<cert_id>/details")
+@require_login
+def cert_details(cert_id):
+    cert = load()["certs"].get(cert_id)
+    if not cert:
+        return jsonify(ok=False, error="certificate not found"), 404
+    return jsonify(ok=True, certificate=certificate_details(cert))
+
+@app.route("/certs/<cert_id>/clients", methods=["POST"])
+@require_login
+def cert_client_create(cert_id):
+    with _lock:
+        d = load()
+        cert = d["certs"].get(cert_id)
+        if not cert:
+            return jsonify(ok=False, error="certificate not found"), 404
+        if not certificate_details(cert)["ready"]:
+            return jsonify(ok=False, error="issue a valid certificate before generating a pull command"), 409
+        try:
+            client, token = create_download_client(cert, request.form.get("label", ""))
+            commands = pull_commands(cert, token, "https://" + request.host,
+                                     request.form.get("directory", ""), request.form.get("reload_command", ""))
+        except CertificateError as exc:
+            return jsonify(ok=False, error=str(exc)), 400
+        save(d)
+        return jsonify(ok=True, client=client, token=token, commands=commands)
+
+@app.route("/certs/<cert_id>/clients/<client_id>", methods=["DELETE"])
+@require_login
+def cert_client_revoke(cert_id, client_id):
+    with _lock:
+        d = load()
+        cert = d["certs"].get(cert_id)
+        if not cert or client_id not in cert.get("download_clients", {}):
+            return jsonify(ok=False, error="client not found"), 404
+        del cert["download_clients"][client_id]
+        save(d)
+    return jsonify(ok=True)
+
 @app.route("/certificates", methods=["POST"])
 @require_login
 def cert_create():
@@ -544,8 +638,13 @@ def cert_issue(cert_id):
     cert = d.get("certs", {}).get(cert_id)
     if not cert:
         return jsonify(ok=False, error="certificate not found"), 404
-    jid = _new_job(f"Issue/renew {cert['target']}")
-    threading.Thread(target=issue_job, args=(jid, cert_id), daemon=True).start()
+    with _jobs_lock:
+        for jid, job in JOBS.items():
+            if job.get("certificate") == cert_id and not job["done"]:
+                return jsonify(job=jid)
+        jid = _new_job(f"Issue/renew {cert['target']}")
+        JOBS[jid]["certificate"] = cert_id
+        threading.Thread(target=issue_job, args=(jid, cert_id), daemon=True).start()
     return jsonify(job=jid)
 
 @app.route("/certs/job/<jid>")
@@ -587,8 +686,8 @@ def _cert_auth(d, cert_hint=None):
             return candidate if candidate and (not cert_hint or candidate["id"] == cert_hint) else None
     return None
 
-def _serve_cert(part):
-    cert_hint = request.headers.get("X-Cert-Id", "").strip() or None
+def _serve_cert(part, cert_hint=None):
+    cert_hint = cert_hint or request.headers.get("X-Cert-Id", "").strip() or None
     d = load()
     cert = _cert_auth(d, cert_hint)
     if not cert:
@@ -601,12 +700,14 @@ def _serve_cert(part):
     return send_file(path, mimetype="application/x-pem-file")
 
 @app.route("/cert/fullchain")
-def cert_fullchain():
-    return _serve_cert("fullchain")
+@app.route("/cert/<cert_id>/fullchain")
+def cert_fullchain(cert_id=None):
+    return _serve_cert("fullchain", cert_id)
 
 @app.route("/cert/key")
-def cert_key():
-    return _serve_cert("key")
+@app.route("/cert/<cert_id>/key")
+def cert_key(cert_id=None):
+    return _serve_cert("key", cert_id)
 
 @app.route("/cert")
 def cert_bundle():
@@ -875,9 +976,13 @@ def nic_update():
         return Response("dnserr", mimetype="text/plain")
     try:
         with _lock:
+            d = load()
+            _, slot = find_slot_by_key(d, key, host)
             result = cf_update_slot(d, host, slot, myip)
             save(d)
         return Response(f"{result.status} {myip}", mimetype="text/plain")
+    except SlotNotFound:
+        return Response("badauth", mimetype="text/plain")
     except SlotConflict:
         return Response("conflict", status=409, mimetype="text/plain")
     except ProviderError:
@@ -902,9 +1007,13 @@ def api_update():
         return jsonify(ok=False, error=str(exc)), 400
     try:
         with _lock:
+            d = load()
+            host, slot = find_slot_by_key(d, key)
             result = cf_update_slot(d, host, slot, myip)
             save(d)
         return jsonify(ok=True, host=host, slot=slot["id"], type=slot["type"], ip=myip, result=result.status)
+    except SlotNotFound:
+        return jsonify(ok=False, error="invalid key"), 403
     except SlotConflict as exc:
         return jsonify(ok=False, host=host, slot=slot["id"], error=str(exc)), 409
     except ProviderError:

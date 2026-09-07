@@ -9,6 +9,7 @@ import os
 import re
 import secrets
 import shutil
+import time
 from pathlib import Path
 from typing import Any, Iterable, Mapping, MutableMapping
 
@@ -120,11 +121,30 @@ def token_authorizes(cert: Mapping[str, Any], token: str) -> bool:
     except CertificateError:
         return False
     expected = cert.get("download_token_hash")
-    if isinstance(expected, str) and len(expected) == 64:
-        return hmac.compare_digest(candidate, expected)
+    if isinstance(expected, str) and len(expected) == 64 and hmac.compare_digest(candidate, expected):
+        return True
+    for client in cert.get("download_clients", {}).values():
+        expected = client.get("token_hash", "")
+        if isinstance(expected, str) and hmac.compare_digest(candidate, expected):
+            return True
     # Read compatibility for data that has not yet passed through migration.
     legacy = cert.get("download_token")
     return isinstance(legacy, str) and bool(legacy) and hmac.compare_digest(token, legacy)
+
+
+def create_download_client(cert: MutableMapping[str, Any], label: str) -> tuple[dict, str]:
+    validate_certificate(cert)
+    label = label.strip()
+    if not label or len(label) > 80 or any(ord(char) < 32 for char in label):
+        raise CertificateError("client label must contain 1 to 80 printable characters")
+    clients = cert.setdefault("download_clients", {})
+    if len(clients) >= 100:
+        raise CertificateError("revoke unused credentials before adding more clients")
+    token = secrets.token_urlsafe(32)
+    client = {"id": "pull_" + secrets.token_hex(12), "label": label,
+              "created_at": int(time.time()), "token_hash": token_digest(token)}
+    clients[client["id"]] = client
+    return {key: value for key, value in client.items() if key != "token_hash"}, token
 
 
 def authenticate_certificate(certs: Mapping[str, Mapping[str, Any]], token: str) -> dict[str, Any] | None:
@@ -204,7 +224,7 @@ def acme_issue_args(cert: Mapping[str, Any]) -> list[str]:
 
 def acme_install_args(cert: Mapping[str, Any], cert_root: str | os.PathLike[str]) -> list[str]:
     paths = certificate_paths(cert, cert_root)
-    primary = cert["target"] if cert["scope"] == "single" else f"*.{cert['target']}"
+    primary = cert["domains"][0]
     return [
         "--install-cert", "-d", primary,
         "--fullchain-file", paths["fullchain"],
